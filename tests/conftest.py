@@ -9,12 +9,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import Settings, get_settings
 from app.db import SCHEMA, Base, get_db
-from app.integrations.github import GitHubClient
+from app.integrations.github import GitHubFactory
 from app.main import app
 from app.models import Integration, Membership, Organization, User, Workspace
 from app.rbac import seed_roles
 from app.routers import auth as auth_router
-from app.routers.pipelines import get_github
+from app.routers.integrations import get_factory
+from app.routers.pipelines import get_github_factory
 from app.security import hash_password
 
 PG_URL = os.environ.get("OPSPILOT_TEST_DATABASE_URL")
@@ -80,7 +81,9 @@ def env():
     db.add(Membership(user_id=outsider.id, org_id=orgs["B"][0].id, role_id=roles["org_admin"].id))
     db.commit()
 
-    settings = Settings(github_token="test-token", cookie_secure=False, sync_min_interval_seconds=0,
+    from cryptography.fernet import Fernet
+
+    settings = Settings(github_token="test-token", secret_key=Fernet.generate_key().decode(), cookie_secure=False, sync_min_interval_seconds=0,
                         github_webhook_secret="whsec")
 
     def _db():
@@ -89,7 +92,9 @@ def env():
 
     app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[get_github] = lambda: GitHubClient(settings, httpx.MockTransport(gh_handler))
+    factory_obj = GitHubFactory(settings, httpx.MockTransport(gh_handler))
+    app.dependency_overrides[get_github_factory] = lambda: factory_obj
+    app.dependency_overrides[get_factory] = lambda: factory_obj
     auth_router._FAILS.clear()
     RERUNS.clear()
     RERUN_STATUS["code"] = 201

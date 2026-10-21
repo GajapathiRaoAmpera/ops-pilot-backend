@@ -59,10 +59,11 @@ def run_from_api(r: dict) -> RunData:
 
 
 class GitHubClient:
-    def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None):
+    def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None, token: str | None = None):
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if settings.github_token:
-            headers["Authorization"] = f"Bearer {settings.github_token}"
+        token = settings.github_token if token is None else token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         self._http = httpx.Client(
             base_url=settings.github_api_url, headers=headers, timeout=10.0,
             transport=transport, follow_redirects=True,
@@ -116,3 +117,19 @@ class GitHubClient:
         except zipfile.BadZipFile as exc:
             raise GitHubError("bad_log_archive") from exc
         return redact("\n".join(parts))[:MAX_LOG_BYTES]
+
+
+class GitHubFactory:
+    """Builds a client with the integration's own decrypted token (env token only as a dev fallback)."""
+
+    def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None):
+        self._settings = settings
+        self._transport = transport
+
+    def for_integration(self, integration) -> GitHubClient:
+        from app.crypto import decrypt  # local import keeps this module importable without a key
+
+        token = None
+        if integration is not None and integration.secret_ciphertext:
+            token = decrypt(self._settings, integration.secret_ciphertext) or ""  # undecryptable => unauthenticated
+        return GitHubClient(self._settings, self._transport, token=token)

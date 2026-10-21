@@ -12,10 +12,10 @@ from sqlalchemy.orm import Session
 from app import audit
 from app.db import get_db
 from app.deps import WorkspaceAccess, csrf_origin_check, workspace_access
-from app.integrations.github import GitHubClient, GitHubError
-from app.models import ActionRequest, Approval, Execution, PipelineRun
+from app.integrations.github import GitHubClient, GitHubError, GitHubFactory
+from app.models import ActionRequest, Approval, Execution, Integration, PipelineRun, User
 from app.rbac import P
-from app.routers.pipelines import get_github
+from app.routers.pipelines import get_github_factory
 
 router = APIRouter(prefix="/workspaces/{ws_id}", tags=["actions"])
 ACTION_TYPES = {"rerun_failed_jobs"}
@@ -49,6 +49,23 @@ def _dto(r: ActionRequest, approval: Approval | None, ex: Execution | None) -> d
     }
 
 
+def _full(db: Session, r: ActionRequest) -> dict:
+    """Request + decision + execution + the context a reviewer needs (run, people)."""
+    approval = db.scalar(select(Approval).where(Approval.request_id == r.id))
+    ex = db.scalar(select(Execution).where(Execution.request_id == r.id))
+    out = _dto(r, approval, ex)
+    run = db.get(PipelineRun, r.run_id)
+    out["run"] = None if run is None else {
+        "repo": run.repo, "workflow": run.workflow, "branch": run.branch, "commit": run.commit_sha[:7],
+        "status": run.status, "conclusion": run.conclusion, "url": run.html_url}
+    requester = db.get(User, r.requested_by)
+    out["requester"] = {"name": requester.name, "email": requester.email} if requester else None
+    if approval is not None and out["decision"] is not None:
+        decider = db.get(User, approval.decided_by)
+        out["decision"]["decidedByName"] = decider.name if decider else None
+    return out
+
+
 def _get_request(db: Session, acc: WorkspaceAccess, req_id: uuid.UUID) -> ActionRequest:
     req = db.get(ActionRequest, req_id)
     if req is None or req.workspace_id != acc.workspace.id:
@@ -79,7 +96,7 @@ def create_request(body: RequestBody, acc: WorkspaceAccess = Depends(workspace_a
     db.commit()
     audit.record(db, "action.requested", resource=f"request:{req.id}", detail=f"{req.type} risk={req.risk}",
                  **_ctx(acc))
-    return _dto(req, None, None)
+    return _full(db, req)
 
 
 @router.get("/approvals")
@@ -89,18 +106,14 @@ def list_approvals(status: str | None = None,
     q = select(ActionRequest).where(ActionRequest.workspace_id == acc.workspace.id)
     if status:
         q = q.where(ActionRequest.status == status)
-    out = []
-    for r in db.scalars(q.order_by(ActionRequest.created_at.desc()).limit(100)):
-        approval = db.scalar(select(Approval).where(Approval.request_id == r.id))
-        ex = db.scalar(select(Execution).where(Execution.request_id == r.id))
-        out.append(_dto(r, approval, ex))
-    return {"requests": out}
+    rows = db.scalars(q.order_by(ActionRequest.created_at.desc()).limit(100))
+    return {"requests": [_full(db, r) for r in rows]}
 
 
 @router.post("/approvals/{req_id}/decision", dependencies=[Depends(csrf_origin_check)])
 def decide(req_id: uuid.UUID, body: DecisionBody,
            acc: WorkspaceAccess = Depends(workspace_access(P["approvals_decide"])),
-           db: Session = Depends(get_db), gh: GitHubClient = Depends(get_github)):
+           db: Session = Depends(get_db), factory: GitHubFactory = Depends(get_github_factory)):
     req = _get_request(db, acc, req_id)
     user = acc.principal.user
     if req.requested_by == user.id:
@@ -118,11 +131,11 @@ def decide(req_id: uuid.UUID, body: DecisionBody,
     db.commit()
     audit.record(db, f"approval.{body.decision}", resource=f"request:{req.id}", **_ctx(acc))
     if body.decision == "approve":
-        _execute(db, acc, req.id, gh)
+        integ = db.scalar(select(Integration).where(Integration.workspace_id == acc.workspace.id,
+                                                    Integration.provider == "github"))
+        _execute(db, acc, req.id, factory.for_integration(integ))
     db.expire_all()
-    req = db.get(ActionRequest, req.id)
-    return _dto(req, db.scalar(select(Approval).where(Approval.request_id == req.id)),
-                db.scalar(select(Execution).where(Execution.request_id == req.id)))
+    return _full(db, db.get(ActionRequest, req.id))
 
 
 def _execute(db: Session, acc: WorkspaceAccess, req_id: uuid.UUID, gh: GitHubClient) -> None:
@@ -166,4 +179,4 @@ def get_execution(ex_id: uuid.UUID, acc: WorkspaceAccess = Depends(workspace_acc
     req = db.get(ActionRequest, ex.request_id) if ex else None
     if ex is None or req is None or req.workspace_id != acc.workspace.id:
         raise HTTPException(404, "not_found")
-    return _dto(req, db.scalar(select(Approval).where(Approval.request_id == req.id)), ex)
+    return _full(db, req)

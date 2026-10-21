@@ -17,6 +17,7 @@ P = {
     "settings_read": "sys:settings:read",
     "members_manage": "sys:members:manage",  # org-wide: workspaces, org members, resets
     "ws_members_manage": "ws:members:manage",  # invite/manage members of a workspace
+    "integrations_manage": "ws:integrations:manage",  # connect/disconnect a workspace's GitHub
 }
 
 ROLES: dict[str, tuple[str, set[str]]] = {
@@ -25,7 +26,7 @@ ROLES: dict[str, tuple[str, set[str]]] = {
         "Workspace Administrator",
         {P["overview_read"], P["pipelines_read"], P["pipelines_execute"], P["automation_read"],
          P["copilot_use"], P["approvals_read"], P["approvals_decide"], P["settings_read"],
-         P["ws_members_manage"]},
+         P["ws_members_manage"], P["integrations_manage"]},
     ),
     "devops_engineer": (
         "DevOps Engineer",

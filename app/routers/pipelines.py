@@ -2,22 +2,22 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import audit
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import WorkspaceAccess, csrf_origin_check, workspace_access
-from app.integrations.github import GitHubClient, GitHubError, RunData
-from app.models import Integration, PipelineRun
+from app.integrations.github import GitHubError, GitHubFactory, RunData
+from app.models import ActionRequest, Integration, PipelineRun
 from app.rbac import P
 
 router = APIRouter(prefix="/workspaces/{ws_id}", tags=["pipelines"])
 
 
-def get_github(settings: Settings = Depends(get_settings)) -> GitHubClient:
-    return GitHubClient(settings)
+def get_github_factory(settings: Settings = Depends(get_settings)) -> GitHubFactory:
+    return GitHubFactory(settings)
 
 
 def _dto(r: PipelineRun) -> dict:
@@ -62,11 +62,12 @@ def list_runs(limit: int = 50, acc: WorkspaceAccess = Depends(workspace_access(P
 
 @router.post("/pipelines/sync", dependencies=[Depends(csrf_origin_check)])
 def sync(acc: WorkspaceAccess = Depends(workspace_access(P["pipelines_execute"])),
-         db: Session = Depends(get_db), gh: GitHubClient = Depends(get_github),
+         db: Session = Depends(get_db), factory: GitHubFactory = Depends(get_github_factory),
          settings: Settings = Depends(get_settings)):
     integ = _integration(db, acc.workspace.id)
     if integ is None:
         raise HTTPException(409, "integration_not_connected")
+    gh = factory.for_integration(integ)
     if not gh.configured:
         raise HTTPException(503, "github_not_configured")
     last = integ.last_synced_at
@@ -104,8 +105,9 @@ def get_run(run_id: uuid.UUID, acc: WorkspaceAccess = Depends(workspace_access(P
 
 @router.get("/pipelines/runs/{run_id}/logs")
 def get_logs(run_id: uuid.UUID, acc: WorkspaceAccess = Depends(workspace_access(P["pipelines_read"])),
-             db: Session = Depends(get_db), gh: GitHubClient = Depends(get_github)):
+             db: Session = Depends(get_db), factory: GitHubFactory = Depends(get_github_factory)):
     row = _run(db, acc, run_id)
+    gh = factory.for_integration(_integration(db, acc.workspace.id))
     if not gh.configured:
         raise HTTPException(503, "github_not_configured")
     try:
@@ -124,6 +126,11 @@ def overview(acc: WorkspaceAccess = Depends(workspace_access(P["overview_read"])
     integ = _integration(db, acc.workspace.id)
     runs = list(db.scalars(select(PipelineRun).where(PipelineRun.workspace_id == acc.workspace.id)
                            .order_by(PipelineRun.started_at.desc()).limit(100)))
+    pending = db.scalar(select(func.count()).select_from(ActionRequest).where(
+        ActionRequest.workspace_id == acc.workspace.id, ActionRequest.status == "pending")) or 0
+    last = db.scalar(select(ActionRequest).where(
+        ActionRequest.workspace_id == acc.workspace.id, ActionRequest.status.in_(["succeeded", "failed"]))
+        .order_by(ActionRequest.created_at.desc()).limit(1))
     counts: dict[str, int] = {}
     for r in runs:
         k = r.conclusion or r.status
@@ -133,6 +140,8 @@ def overview(acc: WorkspaceAccess = Depends(workspace_access(P["overview_read"])
         "pipelines": {"connected": integ is not None, "counts": counts, "total": len(runs),
                       "lastSyncedAt": integ.last_synced_at.isoformat() if integ and integ.last_synced_at else None,
                       "recent": [_dto(r) for r in runs[:10]]},
+        "approvals": {"pending": pending},
+        "lastExecution": None if last is None else {"status": last.status, "type": last.type},
         # Not implemented yet: explicitly flagged so the UI never shows invented data.
-        "notConnected": ["incidents", "alerts", "metrics", "approvals", "automation"],
+        "notConnected": ["incidents", "alerts", "metrics", "automation"],
     }

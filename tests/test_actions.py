@@ -110,3 +110,16 @@ def test_github_failure_is_reported_not_hidden(env):
     r = login("org_admin@a.test").post(f"/workspaces/{ws}/approvals/{req['id']}/decision", headers=ORIGIN,
                                        json={"decision": "approve"})
     assert r.json()["status"] == "failed" and r.json()["execution"]["error"] == "github_403"
+
+
+def test_approvals_list_carries_review_context(env):
+    ws, dev, run_id = _failed_run(env)
+    _request(dev, ws, run_id)
+    admin = login("org_admin@a.test")
+    row = admin.get(f"/workspaces/{ws}/approvals").json()["requests"][0]
+    assert row["run"]["workflow"] == "build" and row["run"]["branch"] == "main"
+    assert row["requester"]["email"] == "devops_engineer@a.test" and row["decision"] is None
+    done = admin.post(f"/workspaces/{ws}/approvals/{row['id']}/decision", headers=ORIGIN,
+                      json={"decision": "approve", "reason": "ok"}).json()
+    assert done["decision"]["decidedByName"] == "org_admin" and done["run"]["repo"] == "o/r"
+    assert admin.get(f"/workspaces/{ws}/approvals?status=pending").json()["requests"] == []

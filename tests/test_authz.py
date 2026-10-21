@@ -92,7 +92,7 @@ def test_sync_then_list_and_logs_not_cross_tenant(env):
     assert o.get(f"/workspaces/{env['ws_b'].id}/pipelines/runs/{run_id}").status_code == 404
     ov = c.get(f"/workspaces/{ws}/overview").json()
     assert ov["pipelines"]["counts"] == {"failure": 1}
-    assert "approvals" in ov["notConnected"]
+    assert "approvals" not in ov["notConnected"] and ov["approvals"]["pending"] == 0
 
 
 def test_audit_trail_is_tenant_scoped(env):
@@ -131,3 +131,16 @@ def test_lockout_window_is_configurable(env):
     for _ in range(2):
         assert c.post("/auth/login", json={"email": "viewer@a.test", "password": "nope"}, headers=ORIGIN).status_code == 401
     assert c.post("/auth/login", json={"email": "viewer@a.test", "password": PASSWORD}, headers=ORIGIN).status_code == 429
+
+
+def test_audit_filters_names_and_cursor(env):
+    login("viewer@a.test")
+    TestClient(app).post("/auth/login", json={"email": "viewer@a.test", "password": "wrong"}, headers=ORIGIN)
+    aud = login("security_auditor@a.test")
+    ev = aud.get("/audit-events?limit=1").json()
+    assert len(ev["events"]) == 1 and ev["nextBefore"] is not None
+    assert ev["events"][0]["actorName"] in {"security_auditor", "viewer", None}
+    older = aud.get(f"/audit-events?limit=50&before_id={ev['nextBefore']}").json()["events"]
+    assert all(e["id"] < ev["nextBefore"] for e in older)
+    only_login = aud.get("/audit-events?action=auth.login&outcome=success").json()["events"]
+    assert only_login and all(e["action"] == "auth.login" and e["outcome"] == "success" for e in only_login)

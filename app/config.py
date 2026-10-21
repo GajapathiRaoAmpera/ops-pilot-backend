@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     login_window_seconds: int = 900
     cookie_secure: bool = True
     # GitHub (MVP uses a fine-scoped token; a GitHub App replaces this later).
+    # Fernet key used to encrypt per-workspace integration tokens at rest. Generate:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    secret_key: str = ""
+    # Dev-only fallback when a workspace has no token of its own.
     github_token: str = ""
     github_api_url: str = "https://api.github.com"
     github_webhook_secret: str = ""

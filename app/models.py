@@ -84,6 +84,9 @@ class Integration(Base):
     provider: Mapped[str] = mapped_column(String(32))
     config: Mapped[dict] = mapped_column(JSON, default=dict)  # non-secret, e.g. {"repo": "owner/name"}
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet; never returned by the API
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PipelineRun(Base):
