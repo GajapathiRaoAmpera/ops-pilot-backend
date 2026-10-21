@@ -170,3 +170,17 @@ def test_weak_password_rejected_on_accept(env):
     t = login("org_admin@a.test").post("/org/invitations", headers=ORIGIN, json={"email": "w@a.test", "role": "viewer"}).json()["token"]
     assert accept(t, password="short").status_code == 422
     assert accept(t).status_code == 200
+
+
+def test_platform_admin_invited_into_an_org_keeps_both_capabilities(env):
+    pa = login("platform@x.test")
+    created = pa.post("/platform/organizations", headers=ORIGIN, json={"name": "Dual", "adminEmail": "platform@x.test"})
+    token = created.json()["adminInvitation"]["token"]
+    assert accept(token).status_code == 409  # existing account must sign in first
+    assert pa.post("/invitations/accept-existing", headers=ORIGIN, json={"token": token}).status_code == 200
+    me = pa.get("/auth/me").json()
+    assert me["organization"]["name"] == "Dual"
+    assert "platform:orgs:manage" in me["permissions"] and "sys:members:manage" in me["permissions"]
+    assert pa.get("/platform/organizations").status_code == 200 and pa.get("/org/members").status_code == 200
+    # still blind to other tenants
+    assert pa.get(f"/workspaces/{env['ws_a'].id}/overview").status_code == 404

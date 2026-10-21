@@ -75,6 +75,8 @@ def me(p: Principal = Depends(current_principal), db: Session = Depends(get_db))
         if ms:
             workspaces.append({"id": str(ws.id), "name": ws.name, "role": ms[0].role.label})
     perms = p.permissions([m for m in p.memberships if m.org_id == org.id])  # for navigation only
+    if p.user.is_platform_admin:
+        perms = perms | {PLATFORM_PERMISSION}  # an operator who was also invited into an org keeps both
     return {**base, "role": primary.role.label, "organization": {"id": str(org.id), "name": org.name},
             "workspaces": workspaces, "permissions": sorted(perms)}
 
