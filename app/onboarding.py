@@ -6,11 +6,9 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import Invitation, Role
 from app.security import hash_token
-
-INVITE_TTL = timedelta(days=7)
-RESET_TTL = timedelta(hours=2)
 
 
 def now() -> datetime:
@@ -19,6 +17,11 @@ def now() -> datetime:
 
 def aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _ttl(kind: str) -> timedelta:
+    s = get_settings()
+    return timedelta(hours=s.invite_ttl_hours) if kind == "invite" else timedelta(minutes=s.reset_ttl_minutes)
 
 
 def create_invitation(db: Session, *, kind: str, org_id: uuid.UUID, email: str, invited_by: uuid.UUID | None,
@@ -35,7 +38,7 @@ def create_invitation(db: Session, *, kind: str, org_id: uuid.UUID, email: str, 
     token = secrets.token_urlsafe(32)
     inv = Invitation(kind=kind, token_hash=hash_token(token), org_id=org_id, workspace_id=workspace_id,
                      role_id=role_id, email=email, user_id=user_id, invited_by=invited_by,
-                     expires_at=now() + (INVITE_TTL if kind == "invite" else RESET_TTL))
+                     expires_at=now() + _ttl(kind))
     db.add(inv)
     db.commit()
     return inv, token

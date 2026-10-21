@@ -21,7 +21,14 @@ log = logging.getLogger("opspilot")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Keep role permissions in the database in step with the code on every start (idempotent)."""
+    """Refuse unsafe production settings, then keep role permissions in step with the code (idempotent)."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    if settings.environment == "production":
+        problems = settings.production_problems()
+        if problems:
+            raise RuntimeError("Refusing to start in production: " + "; ".join(problems))
     try:
         from app.db import get_engine
         from app.rbac import seed_roles

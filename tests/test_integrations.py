@@ -38,7 +38,7 @@ def test_repo_and_token_validation(env):
 
 
 def test_connect_requires_encryption_key(env):
-    app.dependency_overrides[get_settings] = lambda: Settings(cookie_secure=False, secret_key="")
+    app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None, cookie_secure=False, secret_key="")
     r = login("org_admin@a.test").put(path(env["ws_a"].id), headers=ORIGIN, json={"repo": "a/b", "token": TOKEN_A})
     assert r.status_code == 503 and r.json()["detail"] == "encryption_not_configured"
 

@@ -121,13 +121,13 @@ def test_webhook_signature(env):
 def test_lockout_window_is_configurable(env):
     from app.config import Settings, get_settings
     app.dependency_overrides[get_settings] = lambda: Settings(
-        cookie_secure=False, login_max_failures=2, login_window_seconds=0)
+        _env_file=None, cookie_secure=False, login_max_failures=2, login_window_seconds=0)
     c = TestClient(app)
     for _ in range(3):  # a zero-second window never accumulates failures
         assert c.post("/auth/login", json={"email": "viewer@a.test", "password": "nope"}, headers=ORIGIN).status_code == 401
     auth_router._FAILS.clear()
     app.dependency_overrides[get_settings] = lambda: Settings(
-        cookie_secure=False, login_max_failures=2, login_window_seconds=600)
+        _env_file=None, cookie_secure=False, login_max_failures=2, login_window_seconds=600)
     for _ in range(2):
         assert c.post("/auth/login", json={"email": "viewer@a.test", "password": "nope"}, headers=ORIGIN).status_code == 401
     assert c.post("/auth/login", json={"email": "viewer@a.test", "password": PASSWORD}, headers=ORIGIN).status_code == 429
@@ -167,3 +167,47 @@ def test_startup_syncs_new_permissions_into_existing_roles(env):
     with env["factory"]() as db:
         seed_roles(db)  # what lifespan runs on every start
     assert has_perm()
+
+
+def test_role_catalog_is_available_to_any_signed_in_user_and_matches_code(env):
+    from app.rbac import ROLES, WORKSPACE_ROLES, WS_ADMIN_GRANTABLE
+    assert TestClient(app).get("/meta/roles").status_code == 401
+    cat = login("viewer@a.test").get("/meta/roles").json()  # even the least privileged role can read names
+    assert [r["key"] for r in cat["roles"]] == list(ROLES)
+    assert set(cat["workspaceRoles"]) == WORKSPACE_ROLES and set(cat["wsAdminGrantable"]) == WS_ADMIN_GRANTABLE
+    assert "permissions" not in cat["roles"][0]  # names only; the matrix stays behind rbac:read
+
+
+def test_production_refuses_unsafe_settings_and_accepts_safe_ones():
+    import pytest
+
+    from app.config import Settings
+    from app.main import app as application
+    from app.main import lifespan
+
+    unsafe = Settings(_env_file=None, environment="production")
+    assert len(unsafe.production_problems()) == 3  # localhost DB, no secret key, localhost origin
+    assert len(Settings(_env_file=None, environment="production", cookie_secure=False).production_problems()) == 4
+    safe = Settings(_env_file=None, environment="production", database_url="postgresql+psycopg://u:p@db.example.com:5432/x",
+                    secret_key="k" * 44, cookie_secure=True, allowed_origins=["https://app.example.com"])
+    assert safe.production_problems() == []
+
+    import asyncio
+    import os
+    os.environ["OPSPILOT_ENVIRONMENT"] = "production"
+    try:
+        async def start():
+            async with lifespan(application):
+                pass
+        with pytest.raises(RuntimeError, match="Refusing to start in production"):
+            asyncio.run(start())
+    finally:
+        del os.environ["OPSPILOT_ENVIRONMENT"]
+
+
+def test_invitation_lifetimes_come_from_settings(env, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    monkeypatch.setenv("OPSPILOT_INVITE_TTL_HOURS", "24")
+    r = login("org_admin@a.test").post("/org/invitations", headers=ORIGIN, json={"email": "ttl@a.test", "role": "viewer"}).json()
+    left = datetime.fromisoformat(r["expiresAt"]) - datetime.now(UTC)
+    assert timedelta(hours=23) < left <= timedelta(hours=24)

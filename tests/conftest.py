@@ -83,7 +83,7 @@ def env():
 
     from cryptography.fernet import Fernet
 
-    settings = Settings(github_token="test-token", secret_key=Fernet.generate_key().decode(), cookie_secure=False, sync_min_interval_seconds=0,
+    settings = Settings(_env_file=None, github_token="test-token", secret_key=Fernet.generate_key().decode(), cookie_secure=False, sync_min_interval_seconds=0,
                         github_webhook_secret="whsec")
 
     def _db():

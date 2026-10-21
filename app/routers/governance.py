@@ -3,11 +3,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import Principal, require_permission
+from app.deps import Principal, current_principal, require_permission
 from app.models import AuditEvent, Role, User
-from app.rbac import P
+from app.rbac import ROLES, WORKSPACE_ROLES, WS_ADMIN_GRANTABLE, P
 
 router = APIRouter(tags=["governance"])
+
+
+@router.get("/meta/roles")
+def role_catalog(_: Principal = Depends(current_principal)):
+    """Role names and which of them can be granted where. One source for every role picker in the UI."""
+    return {
+        "roles": [{"key": k, "label": label} for k, (label, _perms) in ROLES.items()],
+        "workspaceRoles": sorted(WORKSPACE_ROLES),
+        "wsAdminGrantable": sorted(WS_ADMIN_GRANTABLE),
+    }
 
 
 @router.get("/rbac/matrix")
