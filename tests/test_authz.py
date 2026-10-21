@@ -147,18 +147,23 @@ def test_audit_filters_names_and_cursor(env):
 
 
 def test_startup_syncs_new_permissions_into_existing_roles(env):
-    from sqlalchemy import delete
+    from sqlalchemy import delete, select
 
     from app.models import Role, RolePermission
     from app.rbac import seed_roles
 
+    def has_perm() -> bool:
+        with env["factory"]() as db:
+            rid = db.scalar(select(Role.id).where(Role.key == "org_admin"))
+            return db.scalar(select(RolePermission).where(
+                RolePermission.role_id == rid, RolePermission.permission == "ws:integrations:manage")) is not None
+
     with env["factory"]() as db:
-        role = db.query(Role).filter_by(key="org_admin").one()
-        db.execute(delete(RolePermission).where(RolePermission.role_id == role.id,
+        rid = db.scalar(select(Role.id).where(Role.key == "org_admin"))
+        db.execute(delete(RolePermission).where(RolePermission.role_id == rid,
                                                  RolePermission.permission == "ws:integrations:manage"))
         db.commit()
-        assert "ws:integrations:manage" not in {rp.permission for rp in db.query(Role).filter_by(key="org_admin").one().permissions}
+    assert not has_perm()
     with env["factory"]() as db:
-        seed_roles(db)  # what lifespan runs
-    with env["factory"]() as db:
-        assert "ws:integrations:manage" in {rp.permission for rp in db.query(Role).filter_by(key="org_admin").one().permissions}
+        seed_roles(db)  # what lifespan runs on every start
+    assert has_perm()
