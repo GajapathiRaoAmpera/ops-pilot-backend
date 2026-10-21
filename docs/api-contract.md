@@ -60,3 +60,9 @@ Org-level endpoints only count org-wide memberships; workspace roles never grant
 | GET /audit-events?limit&action&outcome&before_id | audit read | actor name/email joined; `nextBefore` cursor; org-scoped |
 | GET /workspaces/{ws}/overview | overview read | adds `approvals.pending`, `lastExecution` |
 
+## Overview activity and automation history (IMPLEMENTED)
+| Method + path | Who | Notes |
+|---|---|---|
+| GET /workspaces/{ws}/overview | overview read | now also `approvals.items` (needs approvals read), `recentExecutions` (needs automation read), `activity` (needs audit read) and `visible` flags; omitted sections are empty, never invented |
+| GET /workspaces/{ws}/executions[?status=&limit=] | automation read | automation history: approved actions that executed, with run, decision and execution result |
+

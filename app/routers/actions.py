@@ -172,6 +172,19 @@ def _execute(db: Session, acc: WorkspaceAccess, req_id: uuid.UUID, gh: GitHubCli
                  detail=error, **_ctx(acc))
 
 
+@router.get("/executions")
+def list_executions(status: str | None = None, limit: int = 50,
+                    acc: WorkspaceAccess = Depends(workspace_access(P["automation_read"])),
+                    db: Session = Depends(get_db)):
+    """Automation history: every approved action that was (or is being) executed in this workspace."""
+    q = (select(ActionRequest).join(Execution, Execution.request_id == ActionRequest.id)
+         .where(ActionRequest.workspace_id == acc.workspace.id))
+    if status in ("executing", "succeeded", "failed"):
+        q = q.where(Execution.status == status)
+    rows = db.scalars(q.order_by(Execution.started_at.desc()).limit(min(max(limit, 1), 100)))
+    return {"executions": [_full(db, r) for r in rows]}
+
+
 @router.get("/executions/{ex_id}")
 def get_execution(ex_id: uuid.UUID, acc: WorkspaceAccess = Depends(workspace_access(P["automation_read"])),
                   db: Session = Depends(get_db)):

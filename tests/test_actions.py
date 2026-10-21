@@ -123,3 +123,32 @@ def test_approvals_list_carries_review_context(env):
                       json={"decision": "approve", "reason": "ok"}).json()
     assert done["decision"]["decidedByName"] == "org_admin" and done["run"]["repo"] == "o/r"
     assert admin.get(f"/workspaces/{ws}/approvals?status=pending").json()["requests"] == []
+
+
+def test_executions_history_is_real_scoped_and_permissioned(env):
+    ws, dev, run_id = _failed_run(env)
+    req = _request(dev, ws, run_id).json()
+    admin = login("org_admin@a.test")
+    assert admin.get(f"/workspaces/{ws}/executions").json()["executions"] == []  # nothing executed yet
+    admin.post(f"/workspaces/{ws}/approvals/{req['id']}/decision", headers=ORIGIN, json={"decision": "approve"})
+    rows = dev.get(f"/workspaces/{ws}/executions").json()["executions"]
+    assert len(rows) == 1 and rows[0]["execution"]["status"] == "succeeded" and rows[0]["run"]["workflow"] == "build"
+    assert dev.get(f"/workspaces/{ws}/executions?status=failed").json()["executions"] == []
+    assert login("viewer@a.test").get(f"/workspaces/{ws}/executions").status_code == 403
+    assert login("outsider@b.test").get(f"/workspaces/{ws}/executions").status_code == 404
+
+
+def test_overview_sections_follow_permissions_and_are_real(env):
+    ws, dev, run_id = _failed_run(env)
+    _request(dev, ws, run_id)
+    admin = login("org_admin@a.test")
+    ov = admin.get(f"/workspaces/{ws}/overview").json()
+    assert ov["visible"] == {"approvals": True, "executions": True, "activity": True}
+    assert ov["approvals"]["pending"] == 1 and ov["approvals"]["items"][0]["workflow"] == "build"
+    assert any(e["action"] == "action.requested" for e in ov["activity"])
+    assert "automation" not in ov["notConnected"]
+    viewer = login("viewer@a.test").get(f"/workspaces/{ws}/overview").json()
+    assert viewer["visible"] == {"approvals": False, "executions": False, "activity": False}
+    assert viewer["approvals"] == {"pending": 1, "items": []} and viewer["activity"] == [] and viewer["recentExecutions"] == []
+    devops = dev.get(f"/workspaces/{ws}/overview").json()
+    assert devops["visible"]["approvals"] and devops["visible"]["executions"] and not devops["visible"]["activity"]

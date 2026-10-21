@@ -10,7 +10,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import WorkspaceAccess, csrf_origin_check, workspace_access
 from app.integrations.github import GitHubError, GitHubFactory, RunData
-from app.models import ActionRequest, Integration, PipelineRun
+from app.models import ActionRequest, AuditEvent, Integration, PipelineRun, User
 from app.rbac import P
 
 router = APIRouter(prefix="/workspaces/{ws_id}", tags=["pipelines"])
@@ -123,25 +123,57 @@ def get_logs(run_id: uuid.UUID, acc: WorkspaceAccess = Depends(workspace_access(
 @router.get("/overview")
 def overview(acc: WorkspaceAccess = Depends(workspace_access(P["overview_read"])),
              db: Session = Depends(get_db)):
-    integ = _integration(db, acc.workspace.id)
-    runs = list(db.scalars(select(PipelineRun).where(PipelineRun.workspace_id == acc.workspace.id)
+    """Everything here is real. Sections the caller may not see are omitted and flagged in `visible`."""
+    ws_id = acc.workspace.id
+    can = acc.permissions
+    integ = _integration(db, ws_id)
+    runs = list(db.scalars(select(PipelineRun).where(PipelineRun.workspace_id == ws_id)
                            .order_by(PipelineRun.started_at.desc()).limit(100)))
     pending = db.scalar(select(func.count()).select_from(ActionRequest).where(
-        ActionRequest.workspace_id == acc.workspace.id, ActionRequest.status == "pending")) or 0
+        ActionRequest.workspace_id == ws_id, ActionRequest.status == "pending")) or 0
     last = db.scalar(select(ActionRequest).where(
-        ActionRequest.workspace_id == acc.workspace.id, ActionRequest.status.in_(["succeeded", "failed"]))
+        ActionRequest.workspace_id == ws_id, ActionRequest.status.in_(["succeeded", "failed"]))
         .order_by(ActionRequest.created_at.desc()).limit(1))
     counts: dict[str, int] = {}
     for r in runs:
         k = r.conclusion or r.status
         counts[k] = counts.get(k, 0) + 1
+
+    visible = {"approvals": P["approvals_read"] in can, "executions": P["automation_read"] in can,
+               "activity": P["audit_read"] in can}
+    pending_items, executions, activity = [], [], []
+    if visible["approvals"]:
+        for r in db.scalars(select(ActionRequest).where(ActionRequest.workspace_id == ws_id, ActionRequest.status == "pending")
+                            .order_by(ActionRequest.created_at.desc()).limit(5)):
+            run = db.get(PipelineRun, r.run_id)
+            who = db.get(User, r.requested_by)
+            pending_items.append({"id": str(r.id), "risk": r.risk, "createdAt": r.created_at.isoformat(),
+                                  "requester": who.name if who else None,
+                                  "workflow": run.workflow if run else "", "repo": run.repo if run else "",
+                                  "branch": run.branch if run else ""})
+    if visible["executions"]:
+        for r in db.scalars(select(ActionRequest).where(ActionRequest.workspace_id == ws_id,
+                                                         ActionRequest.status.in_(["succeeded", "failed", "executing"]))
+                            .order_by(ActionRequest.created_at.desc()).limit(5)):
+            run = db.get(PipelineRun, r.run_id)
+            executions.append({"id": str(r.id), "status": r.status, "type": r.type,
+                               "workflow": run.workflow if run else "", "repo": run.repo if run else "",
+                               "createdAt": r.created_at.isoformat()})
+    if visible["activity"]:
+        for e, name in db.execute(select(AuditEvent, User.name).outerjoin(User, User.id == AuditEvent.actor_id)
+                                  .where(AuditEvent.workspace_id == ws_id).order_by(AuditEvent.id.desc()).limit(10)):
+            activity.append({"id": e.id, "ts": e.ts.isoformat(), "actor": name, "action": e.action,
+                             "resource": e.resource, "outcome": e.outcome})
     return {
-        "workspace": {"id": str(acc.workspace.id), "name": acc.workspace.name},
+        "workspace": {"id": str(ws_id), "name": acc.workspace.name},
         "pipelines": {"connected": integ is not None, "counts": counts, "total": len(runs),
                       "lastSyncedAt": integ.last_synced_at.isoformat() if integ and integ.last_synced_at else None,
                       "recent": [_dto(r) for r in runs[:10]]},
-        "approvals": {"pending": pending},
+        "approvals": {"pending": pending, "items": pending_items},
         "lastExecution": None if last is None else {"status": last.status, "type": last.type},
-        # Not implemented yet: explicitly flagged so the UI never shows invented data.
-        "notConnected": ["incidents", "alerts", "metrics", "automation"],
+        "recentExecutions": executions,
+        "activity": activity,
+        "visible": visible,
+        # Not implemented: stated so the UI never invents numbers for them.
+        "notConnected": ["incidents", "alerts", "metrics"],
     }

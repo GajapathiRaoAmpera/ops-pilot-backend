@@ -81,6 +81,7 @@ def require_platform_admin(p: Principal = Depends(current_principal)) -> Princip
 class WorkspaceAccess:
     principal: Principal
     workspace: Workspace
+    permissions: set[str]  # what this user may do in THIS workspace
 
 
 def workspace_access(permission: str):
@@ -101,6 +102,6 @@ def workspace_access(permission: str):
             raise HTTPException(404, "not_found")
         if permission not in p.permissions(applicable):
             raise HTTPException(403, "forbidden")
-        return WorkspaceAccess(p, ws)
+        return WorkspaceAccess(p, ws, p.permissions(applicable))
 
     return dep
