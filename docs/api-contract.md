@@ -24,3 +24,12 @@ Conventions: JSON; cookie session; `X-CSRF-Token` on unsafe methods; errors `{er
 | POST /webhooks/github | HMAC signature | not session-authenticated |
 
 Permission strings reuse `ops-pilot-frontend/src/features/auth/permissions.ts` pending decision 3.
+
+## Members and password (IMPLEMENTED)
+| Method + path | Permission | Notes |
+|---|---|---|
+| GET /org/members | sys:members:manage | caller's org only |
+| POST /org/members | sys:members:manage | `{email,name,role}`; returns a one-time temporary password; user must change it |
+| PATCH /org/members/{id} | sys:members:manage | change role (not your own); takes effect immediately |
+| DELETE /org/members/{id} | sys:members:manage | disables the user and revokes their sessions (not yourself) |
+| POST /auth/change-password | session | `{currentPassword,newPassword>=12}`; signs out other sessions; blocks all other routes until done |

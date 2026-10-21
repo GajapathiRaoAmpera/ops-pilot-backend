@@ -11,7 +11,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import COOKIE, Principal, csrf_origin_check, current_principal
 from app.models import AuthSession, Membership, Organization, User, Workspace
-from app.security import hash_token, new_session_token, verify_password
+from app.security import hash_password, hash_token, new_session_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -73,6 +73,7 @@ def me(p: Principal = Depends(current_principal), db: Session = Depends(get_db))
         "organization": {"id": str(org.id), "name": org.name},
         "workspaces": workspaces,
         "permissions": sorted(p.permissions()),
+        "mustChangePassword": p.user.must_change_password,
     }
 
 
@@ -87,3 +88,29 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+
+
+class ChangePasswordBody(BaseModel):
+    currentPassword: str = Field(max_length=1024)
+    newPassword: str = Field(min_length=12, max_length=1024)
+
+
+@router.post("/change-password", dependencies=[Depends(csrf_origin_check)])
+def change_password(body: ChangePasswordBody, request: Request, p: Principal = Depends(current_principal),
+                    db: Session = Depends(get_db)):
+    if not verify_password(p.user.password_hash, body.currentPassword):
+        audit.record(db, "auth.password_change", actor_id=p.user.id, outcome="failure")
+        raise HTTPException(401, "invalid_credentials")
+    if body.newPassword == body.currentPassword:
+        raise HTTPException(422, "password_unchanged")
+    p.user.password_hash = hash_password(body.newPassword)
+    p.user.must_change_password = False
+    keep = hash_token(request.cookies.get(COOKIE, ""))
+    for sess in db.scalars(select(AuthSession).where(AuthSession.user_id == p.user.id,
+                                                      AuthSession.revoked_at.is_(None))):
+        if sess.id_hash != keep:  # sign out every other device
+            sess.revoked_at = datetime.now(UTC)
+    db.commit()
+    audit.record(db, "auth.password_change", actor_id=p.user.id,
+                 org_id=p.memberships[0].org_id if p.memberships else None)
+    return {"ok": True}

@@ -13,6 +13,7 @@ from app.security import hash_token
 
 COOKIE = "opspilot_session"
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+PASSWORD_CHANGE_OK = {"/auth/me", "/auth/logout", "/auth/change-password"}
 
 
 def csrf_origin_check(request: Request, settings: Settings = Depends(get_settings)) -> None:
@@ -45,6 +46,8 @@ def current_principal(request: Request, db: Session = Depends(get_db)) -> Princi
     user = db.get(User, sess.user_id)
     if user is None or user.disabled:
         raise HTTPException(401, "unauthenticated")
+    if user.must_change_password and request.url.path not in PASSWORD_CHANGE_OK:
+        raise HTTPException(403, "password_change_required")
     ms = list(db.scalars(select(Membership).where(Membership.user_id == user.id)))
     return Principal(user, ms)
 

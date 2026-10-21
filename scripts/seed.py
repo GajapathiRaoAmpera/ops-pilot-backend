@@ -1,7 +1,11 @@
-"""Dev seed: one org, one workspace, one user per MVP role. Run: PYTHONPATH=. uv run python scripts/seed.py
+"""Bootstrap only. Run: PYTHONPATH=. uv run python scripts/seed.py
 
-Passwords come from OPSPILOT_SEED_PASSWORD, or are generated and printed once. Local development only.
-Set OPSPILOT_SEED_GITHUB_REPO=owner/name to connect the demo workspace to a repository.
+Always: creates/updates the roles and their permissions (idempotent).
+If OPSPILOT_BOOTSTRAP_ADMIN_EMAIL is set and no organization exists: also creates the first
+organization (OPSPILOT_BOOTSTRAP_ORG_NAME), one workspace, and ONE admin with a generated temporary
+password (printed once; the admin must change it at first sign-in). Everyone else is added by
+that admin through the API/UI. No demo users, no shared passwords.
+Optional: OPSPILOT_SEED_GITHUB_REPO=owner/name connects the first workspace to a repository.
 """
 import os
 import secrets
@@ -14,33 +18,29 @@ from app.models import Integration, Membership, Organization, User, Workspace
 from app.rbac import seed_roles
 from app.security import hash_password
 
-USERS = {
-    "admin@opspilot.local": ("Org Admin", "org_admin"),
-    "devops@opspilot.local": ("DevOps Engineer", "devops_engineer"),
-    "auditor@opspilot.local": ("Security Auditor", "security_auditor"),
-    "viewer@opspilot.local": ("Viewer", "viewer"),
-}
-
 with Session(get_engine()) as db:
     roles = seed_roles(db)
-    org = db.scalar(select(Organization).where(Organization.name == "Demo Org"))
-    if org is None:
-        org = Organization(name="Demo Org")
+    print(f"Roles ready: {', '.join(sorted(roles))}")
+    email = (os.environ.get("OPSPILOT_BOOTSTRAP_ADMIN_EMAIL") or "").strip().lower()
+    if not email:
+        print("No OPSPILOT_BOOTSTRAP_ADMIN_EMAIL set: roles only.")
+    elif db.scalar(select(Organization)) is not None:
+        print("An organization already exists: not creating another.")
+    else:
+        org = Organization(name=os.environ.get("OPSPILOT_BOOTSTRAP_ORG_NAME", "My Organization"))
         db.add(org)
         db.flush()
-        ws = Workspace(org_id=org.id, name="Demo Workspace")
+        ws = Workspace(org_id=org.id, name="Default Workspace")
         db.add(ws)
         db.flush()
         repo = os.environ.get("OPSPILOT_SEED_GITHUB_REPO")
         if repo:
             db.add(Integration(org_id=org.id, workspace_id=ws.id, provider="github", config={"repo": repo}))
-        password = os.environ.get("OPSPILOT_SEED_PASSWORD") or secrets.token_urlsafe(12)
-        for email, (name, role) in USERS.items():
-            u = User(email=email, name=name, password_hash=hash_password(password))
-            db.add(u)
-            db.flush()
-            db.add(Membership(user_id=u.id, org_id=org.id, role_id=roles[role].id))
+        temp = secrets.token_urlsafe(14)
+        admin = User(email=email, name=os.environ.get("OPSPILOT_BOOTSTRAP_ADMIN_NAME", "Administrator"),
+                     password_hash=hash_password(temp), must_change_password=True)
+        db.add(admin)
+        db.flush()
+        db.add(Membership(user_id=admin.id, org_id=org.id, role_id=roles["org_admin"].id))
         db.commit()
-        print(f"Seeded. Users: {', '.join(USERS)}  Password: {password}")
-    else:
-        print("Already seeded.")
+        print(f"Created org '{org.name}' and admin {email}\nTemporary password (shown once): {temp}")

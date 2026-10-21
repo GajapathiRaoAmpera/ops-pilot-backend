@@ -15,6 +15,7 @@ P = {
     "rbac_read": "sys:rbac:read",
     "audit_read": "sec:telemetry:audit",
     "settings_read": "sys:settings:read",
+    "members_manage": "sys:members:manage",
 }
 
 ROLES: dict[str, tuple[str, set[str]]] = {
