@@ -16,10 +16,11 @@ UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def csrf_origin_check(request: Request, settings: Settings = Depends(get_settings)) -> None:
-    """Unsafe methods must come from an allowed Origin (cookie is also SameSite=Lax)."""
+    """Browsers always send Origin on cross-site unsafe requests; reject any that is not allowed.
+    A missing Origin (server-to-server relay, curl) is not a CSRF vector. Cookie is also SameSite=Lax."""
     if request.method in UNSAFE:
         origin = request.headers.get("origin")
-        if origin not in settings.allowed_origins:
+        if origin is not None and origin not in settings.allowed_origins:
             raise HTTPException(403, "forbidden_origin")
 
 
