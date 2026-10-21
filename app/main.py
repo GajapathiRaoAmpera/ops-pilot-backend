@@ -1,6 +1,12 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="OpsPilot API", version="0.1.0")
+from app.routers import auth, governance, pipelines, webhooks
+
+app = FastAPI(title="OpsPilot API", version="0.2.0")
+app.include_router(auth.router)
+app.include_router(pipelines.router)
+app.include_router(governance.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/healthz", tags=["system"])
