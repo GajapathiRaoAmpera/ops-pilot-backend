@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.config import Settings, get_settings
-from app.db import Base, get_db
+from app.db import SCHEMA, Base, get_db
 from app.integrations.github import GitHubClient
 from app.main import app
 from app.models import Integration, Membership, Organization, User, Workspace
@@ -44,9 +44,12 @@ def gh_handler(request: httpx.Request) -> httpx.Response:
 def env():
     if PG_URL:  # real Postgres: needed for true concurrency tests
         engine = create_engine(PG_URL)
-        Base.metadata.drop_all(engine)
+        with engine.begin() as c:
+            c.exec_driver_sql(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+            c.exec_driver_sql(f"CREATE SCHEMA {SCHEMA}")
     else:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        engine = engine.execution_options(schema_translate_map={SCHEMA: None})  # SQLite has no schemas
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     db = factory()

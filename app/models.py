@@ -24,7 +24,7 @@ class Organization(Base):
 class Workspace(Base):
     __tablename__ = "workspaces"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
-    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
 
 
@@ -47,7 +47,7 @@ class Role(Base):
 
 class RolePermission(Base):
     __tablename__ = "role_permissions"
-    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id"), primary_key=True)
+    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.roles.id"), primary_key=True)
     permission: Mapped[str] = mapped_column(String(100), primary_key=True)
 
 
@@ -57,17 +57,17 @@ class Membership(Base):
     __tablename__ = "memberships"
     __table_args__ = (UniqueConstraint("user_id", "org_id", "workspace_id"),)
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
-    workspace_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("workspaces.id"), nullable=True)
-    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.users.id"), index=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opspilot.workspaces.id"), nullable=True)
+    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.roles.id"))
     role: Mapped[Role] = relationship(lazy="joined")
 
 
 class AuthSession(Base):
     __tablename__ = "sessions"
     id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -77,8 +77,8 @@ class Integration(Base):
     __tablename__ = "integrations"
     __table_args__ = (UniqueConstraint("workspace_id", "provider"),)
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
-    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.workspaces.id"), index=True)
     provider: Mapped[str] = mapped_column(String(32))
     config: Mapped[dict] = mapped_column(JSON, default=dict)  # non-secret, e.g. {"repo": "owner/name"}
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -88,8 +88,8 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (UniqueConstraint("workspace_id", "provider", "external_id"),)
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
-    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.workspaces.id"), index=True)
     provider: Mapped[str] = mapped_column(String(32))
     external_id: Mapped[str] = mapped_column(String(64))
     repo: Mapped[str] = mapped_column(String(200))
@@ -123,23 +123,23 @@ class ActionRequest(Base):
 
     __tablename__ = "action_requests"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
-    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
-    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pipeline_runs.id"))
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.workspaces.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.pipeline_runs.id"))
     type: Mapped[str] = mapped_column(String(64))  # allowlisted: rerun_failed_jobs
     risk: Mapped[str] = mapped_column(String(16))
     # pending | rejected | approved | executing | succeeded | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     reason: Mapped[str] = mapped_column(String(1000), default="")
-    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class Approval(Base):
     __tablename__ = "approvals"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
-    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("action_requests.id"), unique=True)
-    decided_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.action_requests.id"), unique=True)
+    decided_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.users.id"))
     decision: Mapped[str] = mapped_column(String(16))  # approve | reject
     reason: Mapped[str] = mapped_column(String(1000), default="")
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -148,7 +148,7 @@ class Approval(Base):
 class Execution(Base):
     __tablename__ = "executions"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
-    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("action_requests.id"), unique=True)
+    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.action_requests.id"), unique=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), unique=True)
     status: Mapped[str] = mapped_column(String(16))  # executing | succeeded | failed
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -18,9 +18,9 @@ if config.config_file_name is not None:
 # target_metadata = mymodel.Base.metadata
 import app.models  # noqa: F401
 from app.config import get_settings
-from app.db import Base
+from app.db import SCHEMA, Base
 
-config.set_main_option('sqlalchemy.url', get_settings().database_url)
+config.set_main_option('sqlalchemy.url', get_settings().database_url.replace('%', '%%'))
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
@@ -47,9 +47,12 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        version_table_schema=SCHEMA,
+        include_schemas=True,
     )
 
     with context.begin_transaction():
+        context.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
         context.run_migrations()
 
 
@@ -64,11 +67,20 @@ def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"prepare_threshold": None},
     )
 
     with connectable.connect() as connection:
+        connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+        connection.commit()
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            version_table_schema=SCHEMA,
+            include_schemas=True,
+            include_object=lambda obj, name, type_, reflected, compare_to: (
+                obj.schema == SCHEMA if type_ == "table" else True
+            ),
         )
 
         with context.begin_transaction():
