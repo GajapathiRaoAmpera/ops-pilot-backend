@@ -50,3 +50,13 @@ once to the inviter, who shares `/accept-invite?token=...` (email delivery is a 
 
 Roles: platform admin (flag, tenant-blind), org_admin, workspace_admin, devops_engineer, developer, security_auditor, viewer.
 Org-level endpoints only count org-wide memberships; workspace roles never grant org rights.
+
+## GitHub integration, approvals and audit (IMPLEMENTED)
+| Method + path | Who | Notes |
+|---|---|---|
+| GET/PUT/DELETE /workspaces/{ws}/integrations/github | `ws:integrations:manage` (org admin, workspace admin) | PUT `{repo, token?}`; token is write-only (Fernet at rest); GET returns `{connected, repo, tokenSet, lastSyncedAt}` |
+| POST /workspaces/{ws}/integrations/github/test | same | `{ok}` or `{ok:false, reason: no_token|unauthorized|forbidden|repo_not_found_or_no_access|error}` |
+| GET /workspaces/{ws}/approvals[?status=] | approvals read | rows include run context, requester, decision, execution |
+| GET /audit-events?limit&action&outcome&before_id | audit read | actor name/email joined; `nextBefore` cursor; org-scoped |
+| GET /workspaces/{ws}/overview | overview read | adds `approvals.pending`, `lastExecution` |
+
