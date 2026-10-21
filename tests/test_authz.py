@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.routers import auth as auth_router
 from tests.conftest import ORIGIN, PASSWORD, login
 
 
@@ -115,3 +116,18 @@ def test_webhook_signature(env):
     assert c.post("/webhooks/github", content=body, headers={**h, "x-hub-signature-256": "sha256=bad"}).status_code == 401
     r = c.post("/webhooks/github", content=body, headers={**h, "x-hub-signature-256": _sig(body)})
     assert r.status_code == 200 and r.json() == {"updated": 2}  # both fixture workspaces track o/r
+
+
+def test_lockout_window_is_configurable(env):
+    from app.config import Settings, get_settings
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        cookie_secure=False, login_max_failures=2, login_window_seconds=0)
+    c = TestClient(app)
+    for _ in range(3):  # a zero-second window never accumulates failures
+        assert c.post("/auth/login", json={"email": "viewer@a.test", "password": "nope"}, headers=ORIGIN).status_code == 401
+    auth_router._FAILS.clear()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        cookie_secure=False, login_max_failures=2, login_window_seconds=600)
+    for _ in range(2):
+        assert c.post("/auth/login", json={"email": "viewer@a.test", "password": "nope"}, headers=ORIGIN).status_code == 401
+    assert c.post("/auth/login", json={"email": "viewer@a.test", "password": PASSWORD}, headers=ORIGIN).status_code == 429

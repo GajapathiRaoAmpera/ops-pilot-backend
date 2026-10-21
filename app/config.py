@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     # Origins allowed to make unsafe (state-changing) requests with a session cookie.
     allowed_origins: list[str] = ["http://localhost:3000"]
     session_ttl_hours: int = 12
+    # Sign-in throttle: this many failures within the window blocks that email+IP until the window passes.
+    login_max_failures: int = 5
+    login_window_seconds: int = 900
     cookie_secure: bool = True
     # GitHub (MVP uses a fine-scoped token; a GitHub App replaces this later).
     github_token: str = ""

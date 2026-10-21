@@ -18,13 +18,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 # In-memory limiter: per-process only. Replace with a shared store before multi-instance deploy.
 _FAILS: dict[str, list[float]] = {}
-MAX_FAILS, WINDOW = 5, 15 * 60
 
 
-def _limited(key: str) -> bool:
+def _limited(key: str, s: Settings) -> bool:
     now = time.time()
-    _FAILS[key] = [t for t in _FAILS.get(key, []) if now - t < WINDOW]
-    return len(_FAILS[key]) >= MAX_FAILS
+    _FAILS[key] = [t for t in _FAILS.get(key, []) if now - t < s.login_window_seconds]
+    return len(_FAILS[key]) >= s.login_max_failures
 
 
 class LoginBody(BaseModel):
@@ -37,7 +36,7 @@ def login(body: LoginBody, request: Request, response: Response, db: Session = D
           s: Settings = Depends(get_settings)):
     email = body.email.strip().lower()
     key = f"{email}|{request.client.host if request.client else ''}"
-    if _limited(key):
+    if _limited(key, s):
         raise HTTPException(429, "rate_limited")
     user = db.scalar(select(User).where(User.email == email))
     ok = verify_password(user.password_hash if user else None, body.password)
