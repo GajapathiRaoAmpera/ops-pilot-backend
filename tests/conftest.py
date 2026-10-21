@@ -65,12 +65,15 @@ def env():
         db.add(Integration(org_id=org.id, workspace_id=ws.id, provider="github", config={"repo": "o/r"}))
         orgs[name] = (org, ws)
     users = {}
-    for key in ("org_admin", "devops_engineer", "security_auditor", "viewer"):
+    for key in ("org_admin", "workspace_admin", "devops_engineer", "developer", "security_auditor", "viewer"):
         u = User(email=f"{key}@a.test", name=key, password_hash=hash_password(PASSWORD))
         db.add(u)
         db.flush()
-        db.add(Membership(user_id=u.id, org_id=orgs["A"][0].id, role_id=roles[key].id))
+        scoped = orgs["A"][1].id if key in ("workspace_admin", "developer") else None
+        db.add(Membership(user_id=u.id, org_id=orgs["A"][0].id, workspace_id=scoped, role_id=roles[key].id))
         users[key] = u
+    pa = User(email="platform@x.test", name="platform", password_hash=hash_password(PASSWORD), is_platform_admin=True)
+    db.add(pa)
     outsider = User(email="outsider@b.test", name="outsider", password_hash=hash_password(PASSWORD))
     db.add(outsider)
     db.flush()

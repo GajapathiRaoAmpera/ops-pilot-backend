@@ -25,11 +25,28 @@ Conventions: JSON; cookie session; `X-CSRF-Token` on unsafe methods; errors `{er
 
 Permission strings reuse `ops-pilot-frontend/src/features/auth/permissions.ts` pending decision 3.
 
-## Members and password (IMPLEMENTED)
-| Method + path | Permission | Notes |
+## Onboarding and membership (IMPLEMENTED, supersedes temp-password flow)
+Flow: Platform Admin -> creates org + first-admin invitation link -> Org Admin creates workspaces and invites
+people (org-wide or one workspace) -> Workspace Admin invites/manages inside their workspace only.
+Invitation links are 256-bit, stored hashed, expire (invite 7d, reset 2h) and are single use. The token is shown
+once to the inviter, who shares `/accept-invite?token=...` (email delivery is a later integration).
+
+| Method + path | Who | Notes |
 |---|---|---|
-| GET /org/members | sys:members:manage | caller's org only |
-| POST /org/members | sys:members:manage | `{email,name,role}`; returns a one-time temporary password; user must change it |
-| PATCH /org/members/{id} | sys:members:manage | change role (not your own); takes effect immediately |
-| DELETE /org/members/{id} | sys:members:manage | disables the user and revokes their sessions (not yourself) |
-| POST /auth/change-password | session | `{currentPassword,newPassword>=12}`; signs out other sessions; blocks all other routes until done |
+| POST /platform/organizations | Platform Admin | `{name,adminEmail}` -> org + default workspace + org_admin invitation |
+| GET /platform/organizations | Platform Admin | counts only, no tenant data |
+| POST /org/invitations | Org Admin | `{email,role,workspaceId?}`; workspace invites limited to workspace roles |
+| GET/DELETE /org/invitations[/{id}] | Org Admin | pending list / revoke |
+| POST /workspaces/{ws}/invitations | Workspace Admin+ | cannot grant own level or above |
+| GET /invitations/{token} | public | preview (org, role, email) |
+| POST /invitations/accept | public | `{token,name,password>=12}` creates account, or completes a password reset |
+| POST /invitations/accept-existing | signed-in invitee | adds membership to an existing account |
+| GET /org/members, GET/POST /org/workspaces | Org Admin | |
+| PATCH/DELETE /org/memberships/{id} | Org Admin | not self; last org admin protected |
+| DELETE /org/members/{userId} | Org Admin | disable account + end sessions |
+| POST /org/members/{userId}/reset-link | Org Admin | single-use reset link |
+| GET /workspaces/{ws}/members; PATCH/DELETE /workspaces/{ws}/memberships/{id} | Workspace Admin+ | scoped to the workspace |
+| POST /auth/change-password | session | signs out other sessions |
+
+Roles: platform admin (flag, tenant-blind), org_admin, workspace_admin, devops_engineer, developer, security_auditor, viewer.
+Org-level endpoints only count org-wide memberships; workspace roles never grant org rights.

@@ -30,6 +30,10 @@ class Principal:
     user: User
     memberships: list[Membership]
 
+    def org_wide_permissions(self) -> set[str]:
+        """Permissions from org-wide memberships only. Workspace-scoped roles never grant org-level rights."""
+        return self.permissions([m for m in self.memberships if m.workspace_id is None])
+
     def permissions(self, memberships: list[Membership] | None = None) -> set[str]:
         ms = self.memberships if memberships is None else memberships
         return {rp.permission for m in ms for rp in m.role.permissions}
@@ -57,14 +61,20 @@ def _aware(dt: datetime) -> datetime:
 
 
 def require_permission(permission: str):
-    """Org-level permission check (union across the user's memberships)."""
+    """Org-level permission check: only org-wide memberships count."""
 
     def dep(p: Principal = Depends(current_principal)) -> Principal:
-        if permission not in p.permissions():
+        if permission not in p.org_wide_permissions():
             raise HTTPException(403, "forbidden")
         return p
 
     return dep
+
+
+def require_platform_admin(p: Principal = Depends(current_principal)) -> Principal:
+    if not p.user.is_platform_admin:
+        raise HTTPException(403, "forbidden")
+    return p
 
 
 @dataclass

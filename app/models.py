@@ -35,6 +35,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(200))
     password_hash: Mapped[str] = mapped_column(String(255))
     disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
@@ -156,3 +157,22 @@ class Execution(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(String(500), default="")
+
+
+class Invitation(Base):
+    """Single-use, expiring link. kind=invite adds a membership; kind=reset sets a new password."""
+
+    __tablename__ = "invitations"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    kind: Mapped[str] = mapped_column(String(16), default="invite")  # invite | reset
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"), index=True)
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opspilot.workspaces.id"), nullable=True)
+    role_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opspilot.roles.id"), nullable=True)
+    email: Mapped[str] = mapped_column(String(320))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opspilot.users.id"), nullable=True)  # reset only
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opspilot.users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

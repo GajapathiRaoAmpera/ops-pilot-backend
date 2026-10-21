@@ -66,6 +66,8 @@ def test_permission_matrix(env):
     expect = {
         "viewer": {"runs": 200, "sync": 403, "rbac": 403, "audit": 403},
         "devops_engineer": {"runs": 200, "sync": 200, "rbac": 403, "audit": 403},
+        "developer": {"runs": 200, "sync": 403, "rbac": 403, "audit": 403},
+        "workspace_admin": {"runs": 200, "sync": 200, "rbac": 403, "audit": 403},
         "security_auditor": {"runs": 200, "sync": 403, "rbac": 200, "audit": 200},
         "org_admin": {"runs": 200, "sync": 200, "rbac": 200, "audit": 200},
     }

@@ -11,6 +11,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import COOKIE, Principal, csrf_origin_check, current_principal
 from app.models import AuthSession, Membership, Organization, User, Workspace
+from app.rbac import PLATFORM_PERMISSION
 from app.security import hash_password, hash_token, new_session_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -58,23 +59,24 @@ def login(body: LoginBody, request: Request, response: Response, db: Session = D
 
 @router.get("/me")
 def me(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    base = {"user": {"id": str(p.user.id), "email": p.user.email, "name": p.user.name},
+            "mustChangePassword": p.user.must_change_password}
+    if p.user.is_platform_admin and not p.memberships:
+        # Platform operators manage tenants only; they hold no tenant permissions.
+        return {**base, "role": "Platform Administrator", "organization": {"id": "platform", "name": "OpsPilot Platform"},
+                "workspaces": [], "permissions": [PLATFORM_PERMISSION]}
     if not p.memberships:
         raise HTTPException(403, "no_membership")
-    org_id = p.memberships[0].org_id
-    org = db.get(Organization, org_id)
+    primary = next((m for m in p.memberships if m.workspace_id is None), p.memberships[0])
+    org = db.get(Organization, primary.org_id)
     workspaces = []
-    for ws in db.scalars(select(Workspace).where(Workspace.org_id == org_id)):
-        ms = [m for m in p.memberships if m.org_id == org_id and m.workspace_id in (None, ws.id)]
+    for ws in db.scalars(select(Workspace).where(Workspace.org_id == org.id).order_by(Workspace.name)):
+        ms = [m for m in p.memberships if m.org_id == org.id and m.workspace_id in (None, ws.id)]
         if ms:
             workspaces.append({"id": str(ws.id), "name": ws.name, "role": ms[0].role.label})
-    return {
-        "user": {"id": str(p.user.id), "email": p.user.email, "name": p.user.name},
-        "role": p.memberships[0].role.label,  # display label only
-        "organization": {"id": str(org.id), "name": org.name},
-        "workspaces": workspaces,
-        "permissions": sorted(p.permissions()),
-        "mustChangePassword": p.user.must_change_password,
-    }
+    perms = p.permissions([m for m in p.memberships if m.org_id == org.id])  # for navigation only
+    return {**base, "role": primary.role.label, "organization": {"id": str(org.id), "name": org.name},
+            "workspaces": workspaces, "permissions": sorted(perms)}
 
 
 @router.post("/logout", dependencies=[Depends(csrf_origin_check)])
