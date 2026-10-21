@@ -81,6 +81,17 @@ class GitHubClient:
             raise GitHubError(f"github_{res.status_code}")
         return res
 
+    def rerun_failed_jobs(self, repo: str, run_id: str) -> None:
+        """WRITE. Only reachable from an approved, audited execution."""
+        if not valid_repo(repo) or not run_id.isdigit():
+            raise GitHubError("invalid_request")
+        try:
+            res = self._http.post(f"/repos/{repo}/actions/runs/{run_id}/rerun-failed-jobs")
+        except httpx.HTTPError as exc:
+            raise GitHubError("github_unreachable") from exc
+        if res.status_code != 201:
+            raise GitHubError(f"github_{res.status_code}")
+
     def list_runs(self, repo: str, limit: int = 20) -> list[RunData]:
         if not valid_repo(repo):
             raise GitHubError("invalid_repo")

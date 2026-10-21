@@ -116,3 +116,42 @@ class AuditEvent(Base):
     resource: Mapped[str] = mapped_column(String(200), default="")
     outcome: Mapped[str] = mapped_column(String(20), default="success")
     detail: Mapped[str] = mapped_column(Text, default="")
+
+
+class ActionRequest(Base):
+    """A proposed write action. Nothing executes without an approval by a different user."""
+
+    __tablename__ = "action_requests"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pipeline_runs.id"))
+    type: Mapped[str] = mapped_column(String(64))  # allowlisted: rerun_failed_jobs
+    risk: Mapped[str] = mapped_column(String(16))
+    # pending | rejected | approved | executing | succeeded | failed
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class Approval(Base):
+    __tablename__ = "approvals"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("action_requests.id"), unique=True)
+    decided_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    decision: Mapped[str] = mapped_column(String(16))  # approve | reject
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class Execution(Base):
+    __tablename__ = "executions"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("action_requests.id"), unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True)
+    status: Mapped[str] = mapped_column(String(16))  # executing | succeeded | failed
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(String(500), default="")

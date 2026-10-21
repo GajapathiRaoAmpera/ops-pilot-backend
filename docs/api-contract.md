@@ -15,10 +15,10 @@ Conventions: JSON; cookie session; `X-CSRF-Token` on unsafe methods; errors `{er
 | GET /workspaces/{ws}/pipelines/runs/{id}/logs | cicd:pipelines:read | sanitized |
 | POST /workspaces/{ws}/investigations | ai:copilot:use | `{run_id}`; idempotent; async |
 | GET /investigations/{id} | ai:copilot:use | diagnosis, evidence, confidence, tool trace |
-| POST /action-requests | cicd:pipelines:execute | type from allowlist (`rerun_failed_jobs`); server computes risk |
-| GET /approvals | approvals:requests:read | |
-| POST /approvals/{id}/decision | approvals:requests:approve | approve/reject + reason; SoD enforced |
-| GET /executions/{id} | auto:runbooks:read | backend-confirmed state only |
+| POST /workspaces/{ws}/action-requests | cicd:pipelines:execute | `{runId,type,reason}`; type from allowlist (`rerun_failed_jobs`); run must be failed; server computes risk (IMPLEMENTED) |
+| GET /workspaces/{ws}/approvals | approvals:requests:read | IMPLEMENTED |
+| POST /workspaces/{ws}/approvals/{id}/decision | approvals:requests:approve | approve/reject + reason; requester != approver; atomic single decision; approve runs the action inline (IMPLEMENTED) |
+| GET /workspaces/{ws}/executions/{id} | auto:runbooks:read | backend-confirmed state only (IMPLEMENTED) |
 | GET /audit-events | sec:telemetry:audit | filter + cursor pagination |
 | GET /rbac/matrix | sys:rbac:read | |
 | POST /webhooks/github | HMAC signature | not session-authenticated |

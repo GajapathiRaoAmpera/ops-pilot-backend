@@ -8,5 +8,5 @@ cp .env.example .env              # add OPSPILOT_GITHUB_TOKEN etc. (never commit
 PYTHONPATH=. uv run alembic upgrade head
 OPSPILOT_SEED_GITHUB_REPO=owner/repo PYTHONPATH=. uv run python scripts/seed.py
 OPSPILOT_COOKIE_SECURE=false uv run uvicorn app.main:app --port 8000   # secure cookies need HTTPS
-uv run pytest
+uv run pytest   # set OPSPILOT_TEST_DATABASE_URL (a separate empty DB) to also run the Postgres concurrency test
 ```

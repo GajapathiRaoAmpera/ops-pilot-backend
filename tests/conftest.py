@@ -1,3 +1,5 @@
+import os
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -15,11 +17,21 @@ from app.routers import auth as auth_router
 from app.routers.pipelines import get_github
 from app.security import hash_password
 
+PG_URL = os.environ.get("OPSPILOT_TEST_DATABASE_URL")
 PASSWORD = "test-password-123"
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
+RERUNS: list[str] = []
+RERUN_STATUS = {"code": 201}
+
+
 def gh_handler(request: httpx.Request) -> httpx.Response:
+    if request.method == "POST" and request.url.path.endswith("/rerun-failed-jobs"):
+        RERUNS.append(request.url.path)
+        return httpx.Response(RERUN_STATUS["code"])
+    if request.url.path.endswith("/actions/runs/101"):
+        return httpx.Response(200, json={"id": 101, "name": "build", "status": "queued", "head_sha": "a" * 40})
     if request.url.path.endswith("/actions/runs"):
         return httpx.Response(200, json={"workflow_runs": [{
             "id": 101, "name": "build", "head_branch": "main", "head_sha": "a" * 40,
@@ -30,7 +42,11 @@ def gh_handler(request: httpx.Request) -> httpx.Response:
 
 @pytest.fixture()
 def env():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    if PG_URL:  # real Postgres: needed for true concurrency tests
+        engine = create_engine(PG_URL)
+        Base.metadata.drop_all(engine)
+    else:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     db = factory()
@@ -69,6 +85,8 @@ def env():
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_github] = lambda: GitHubClient(settings, httpx.MockTransport(gh_handler))
     auth_router._FAILS.clear()
+    RERUNS.clear()
+    RERUN_STATUS["code"] = 201
     yield {"ws_a": orgs["A"][1], "ws_b": orgs["B"][1], "factory": factory}
     app.dependency_overrides.clear()
 
