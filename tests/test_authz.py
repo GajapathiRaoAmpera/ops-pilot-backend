@@ -144,3 +144,21 @@ def test_audit_filters_names_and_cursor(env):
     assert all(e["id"] < ev["nextBefore"] for e in older)
     only_login = aud.get("/audit-events?action=auth.login&outcome=success").json()["events"]
     assert only_login and all(e["action"] == "auth.login" and e["outcome"] == "success" for e in only_login)
+
+
+def test_startup_syncs_new_permissions_into_existing_roles(env):
+    from sqlalchemy import delete
+
+    from app.models import Role, RolePermission
+    from app.rbac import seed_roles
+
+    with env["factory"]() as db:
+        role = db.query(Role).filter_by(key="org_admin").one()
+        db.execute(delete(RolePermission).where(RolePermission.role_id == role.id,
+                                                 RolePermission.permission == "ws:integrations:manage"))
+        db.commit()
+        assert "ws:integrations:manage" not in {rp.permission for rp in db.query(Role).filter_by(key="org_admin").one().permissions}
+    with env["factory"]() as db:
+        seed_roles(db)  # what lifespan runs
+    with env["factory"]() as db:
+        assert "ws:integrations:manage" in {rp.permission for rp in db.query(Role).filter_by(key="org_admin").one().permissions}

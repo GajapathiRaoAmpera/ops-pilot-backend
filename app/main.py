@@ -1,4 +1,8 @@
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from sqlalchemy.orm import Session
 
 from app.routers import (
     actions,
@@ -12,7 +16,24 @@ from app.routers import (
     webhooks,
 )
 
-app = FastAPI(title="OpsPilot API", version="0.6.0")
+log = logging.getLogger("opspilot")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Keep role permissions in the database in step with the code on every start (idempotent)."""
+    try:
+        from app.db import get_engine
+        from app.rbac import seed_roles
+
+        with Session(get_engine()) as db:
+            seed_roles(db)
+    except Exception:  # never block startup; the DB may be migrating or briefly unreachable
+        log.exception("role permission sync skipped")
+    yield
+
+
+app = FastAPI(title="OpsPilot API", version="0.6.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(members.router)
 app.include_router(invitations.router)
