@@ -11,7 +11,7 @@ from app.config import Settings, get_settings
 from app.db import SCHEMA, Base, get_db
 from app.integrations.github import GitHubFactory
 from app.main import app
-from app.models import Integration, Membership, Organization, User, Workspace
+from app.models import Integration, Membership, Organization, Repository, User, Workspace
 from app.rbac import seed_roles
 from app.routers import auth as auth_router
 from app.routers.integrations import get_factory
@@ -63,7 +63,8 @@ def env():
         ws = Workspace(org_id=org.id, name=f"WS {name}")
         db.add(ws)
         db.flush()
-        db.add(Integration(org_id=org.id, workspace_id=ws.id, provider="github", config={"repo": "o/r"}))
+        db.add(Integration(org_id=org.id, workspace_id=ws.id, provider="github", config={}))
+        db.add(Repository(org_id=org.id, workspace_id=ws.id, provider="github", full_name="o/r"))
         orgs[name] = (org, ws)
     users = {}
     for key in ("org_admin", "workspace_admin", "devops_engineer", "developer", "security_auditor", "viewer"):

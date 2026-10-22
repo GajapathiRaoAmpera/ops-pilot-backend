@@ -34,7 +34,8 @@ class RunData:
 
 
 def valid_repo(repo: str) -> bool:
-    return bool(_REPO_RE.match(repo))
+    """owner/name only; "." and ".." segments are refused so a name can never walk the API path."""
+    return bool(_REPO_RE.match(repo)) and not any(part in (".", "..") for part in repo.split("/"))
 
 
 def redact(text: str) -> str:

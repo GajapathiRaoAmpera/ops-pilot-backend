@@ -89,6 +89,21 @@ class Integration(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Repository(Base):
+    """A repository a workspace tracks. Uses its own token when set, otherwise the workspace's shared one."""
+    __tablename__ = "repositories"
+    __table_args__ = (UniqueConstraint("workspace_id", "provider", "full_name"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.workspaces.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="github")
+    full_name: Mapped[str] = mapped_column(String(200), index=True)  # owner/name
+    secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet; never returned
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (UniqueConstraint("workspace_id", "provider", "external_id"),)

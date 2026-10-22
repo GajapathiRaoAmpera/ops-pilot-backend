@@ -11,6 +11,7 @@ erDiagram
   roles ||--o{ role_permissions : has
   users ||--o{ sessions : has
   workspaces ||--o{ integrations : has
+  workspaces ||--o{ repositories : tracks
   workspaces ||--o{ pipeline_runs : has
   pipeline_runs ||--o{ investigations : has
   investigations ||--o{ investigation_evidence : cites
@@ -30,6 +31,7 @@ erDiagram
 | memberships | user_id, org_id, workspace_id (nullable = org-wide), role_id; unique(user, org, workspace) |
 | sessions | id_hash, user_id, expires_at, revoked_at, csrf_secret |
 | integrations | workspace_id, provider, config (non-secret), secret_ref |
+| repositories | workspace_id, provider, full_name (owner/name), secret_ciphertext (own token, nullable), last_synced_at; unique(workspace, provider, full_name); max 50 per workspace |
 | pipeline_runs | workspace_id, external_id, repo, workflow, status, conclusion, started_at, fetched_at; unique(workspace, provider, external_id) |
 | investigations | run_id, status, summary, confidence, model, created_by |
 | investigation_evidence | investigation_id, source, ref, excerpt |

@@ -21,7 +21,9 @@ def test_connect_encrypts_token_and_never_returns_it(env):
     ws = env["ws_a"].id
     admin = login("org_admin@a.test")
     r = admin.put(path(ws), headers=ORIGIN, json={"repo": "acme/api", "token": TOKEN_A})
-    assert r.status_code == 200 and r.json() == {"connected": True, "repo": "acme/api", "tokenSet": True, "lastSyncedAt": None}
+    body = r.json()
+    assert r.status_code == 200 and body["connected"] and body["tokenSet"] and body["lastSyncedAt"] is None
+    assert [x["repo"] for x in body["repositories"]] == ["acme/api", "o/r"]  # o/r is seeded by the fixture
     assert TOKEN_A not in r.text and TOKEN_A not in admin.get(path(ws)).text
     with env["factory"]() as db:
         row = db.scalar(select(Integration).where(Integration.workspace_id == ws))
@@ -72,12 +74,14 @@ def test_test_endpoint_reports_coarse_reasons_only(env):
     ws = env["ws_a"].id
     admin = login("org_admin@a.test")
     admin.put(path(ws), headers=ORIGIN, json={"repo": "acme/api", "token": TOKEN_A})
-    assert admin.post(path(ws) + "/test", headers=ORIGIN).json() == {"ok": True}
+    ok = admin.post(path(ws) + "/test", headers=ORIGIN).json()
+    assert ok["ok"] is True and {x["repo"] for x in ok["results"]} == {"acme/api", "o/r"}
     settings = app.dependency_overrides[get_settings]()
     denied = GitHubFactory(settings, httpx.MockTransport(lambda r: httpx.Response(401, json={"message": "Bad credentials"})))
     app.dependency_overrides[get_factory] = lambda: denied
     r = admin.post(path(ws) + "/test", headers=ORIGIN)
-    assert r.json() == {"ok": False, "reason": "unauthorized"} and "Bad credentials" not in r.text
+    assert r.json()["ok"] is False and r.json()["reason"] == "unauthorized" and "Bad credentials" not in r.text
+    assert all(x == {"repo": x["repo"], "ok": False, "reason": "unauthorized"} for x in r.json()["results"])
 
 
 def test_each_workspace_uses_its_own_token(env):
@@ -98,3 +102,49 @@ def test_each_workspace_uses_its_own_token(env):
     assert ("/repos/acme/a/actions/runs", f"Bearer {TOKEN_A}") in seen
     assert ("/repos/other/b/actions/runs", f"Bearer {TOKEN_B}") in seen
     assert not any(p.startswith("/repos/other") and t.endswith("A" * 36) for p, t in seen)
+
+
+def test_many_repositories_each_with_the_right_token(env):
+    """A repository's own token wins; others use the workspace's shared token. One failure does not stop the rest."""
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.headers.get("authorization", "")))
+        if "/repos/acme/broken/" in request.url.path:
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(200, json={"workflow_runs": []})
+
+    settings = app.dependency_overrides[get_settings]()
+    factory = GitHubFactory(settings, httpx.MockTransport(handler))
+    app.dependency_overrides[get_github_factory] = lambda: factory
+    ws, admin = env["ws_a"].id, login("org_admin@a.test")
+    admin.put(path(ws), headers=ORIGIN, json={"token": TOKEN_A})
+    admin.post(path(ws) + "/repositories", headers=ORIGIN, json={"repo": "acme/web", "token": TOKEN_B})
+    admin.post(path(ws) + "/repositories", headers=ORIGIN, json={"repo": "acme/broken"})
+    status = admin.get(path(ws)).json()
+    assert {x["repo"]: x["ownToken"] for x in status["repositories"]} == {"acme/broken": False, "acme/web": True, "o/r": False}
+    assert TOKEN_B not in str(status)
+
+    out = admin.post(f"/workspaces/{ws}/pipelines/sync", headers=ORIGIN).json()
+    assert out["repositories"] == 3 and out["failed"] == [{"repo": "acme/broken", "reason": "upstream_error"}]
+    assert ("/repos/acme/web/actions/runs", f"Bearer {TOKEN_B}") in seen
+    assert ("/repos/o/r/actions/runs", f"Bearer {TOKEN_A}") in seen
+
+    web = next(x for x in status["repositories"] if x["repo"] == "acme/web")
+    admin.put(path(ws) + f"/repositories/{web['id']}", headers=ORIGIN, json={"useSharedToken": True})
+    assert next(x for x in admin.get(path(ws)).json()["repositories"] if x["repo"] == "acme/web")["ownToken"] is False
+    assert admin.delete(path(ws) + f"/repositories/{web['id']}", headers=ORIGIN).status_code == 200
+    assert "acme/web" not in [x["repo"] for x in admin.get(path(ws)).json()["repositories"]]
+
+
+def test_repository_rules(env):
+    ws, admin = env["ws_a"].id, login("org_admin@a.test")
+    assert admin.post(path(ws) + "/repositories", headers=ORIGIN, json={"repo": "../x"}).status_code == 422
+    assert admin.post(path(ws) + "/repositories", headers=ORIGIN, json={"repo": "a/b", "token": "short"}).status_code == 422
+    first = admin.post(path(ws) + "/repositories", headers=ORIGIN, json={"repo": "a/b"}).json()
+    again = admin.post(path(ws) + "/repositories", headers=ORIGIN, json={"repo": "a/b"}).json()
+    assert len(first["repositories"]) == len(again["repositories"])  # adding twice is a no-op
+    rid = next(x["id"] for x in first["repositories"] if x["repo"] == "a/b")
+    assert login("outsider@b.test").delete(f"/workspaces/{env['ws_b'].id}/integrations/github/repositories/{rid}",
+                                           headers=ORIGIN).status_code == 404  # another tenant's repository
+    assert login("devops_engineer@a.test").post(path(ws) + "/repositories", headers=ORIGIN, json={"repo": "c/d"}).status_code == 403

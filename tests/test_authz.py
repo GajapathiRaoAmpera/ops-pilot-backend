@@ -83,7 +83,7 @@ def test_permission_matrix(env):
 def test_sync_then_list_and_logs_not_cross_tenant(env):
     ws = env["ws_a"].id
     c = login("devops_engineer@a.test")
-    assert c.post(f"/workspaces/{ws}/pipelines/sync", headers=ORIGIN).json() == {"synced": 1}
+    assert c.post(f"/workspaces/{ws}/pipelines/sync", headers=ORIGIN).json() == {"synced": 1, "repositories": 1, "failed": []}
     runs = c.get(f"/workspaces/{ws}/pipelines/runs").json()
     assert runs["runs"][0]["conclusion"] == "failure"
     run_id = runs["runs"][0]["id"]

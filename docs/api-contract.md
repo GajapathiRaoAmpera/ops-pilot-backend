@@ -73,3 +73,21 @@ Org-level endpoints only count org-wide memberships; workspace roles never grant
 | GET/PUT/DELETE /workspaces/{ws}/cloud/gcp | `cloud:connections:manage` (Organization Administrator only) | PUT `{key}` is a service-account JSON, write-only (Fernet at rest); GET returns `{connected, projectId, serviceAccount, keySet}` |
 | POST /workspaces/{ws}/cloud/gcp/test | same | `{ok, project}` or `{ok:false, reason: unauthorized|forbidden|not_found|unreachable|error|...}` |
 | GET /workspaces/{ws}/cloud/gcp/inventory | same | `{projectId, compute[], cloudRun[], gke[], errors{api: reason}}`; GET calls only, fixed Google hosts |
+
+## Many repositories per workspace (IMPLEMENTED, supersedes the single `repo` field above)
+A workspace has one GitHub connection holding an optional **shared token**, and up to 50 **repositories**. A repository
+may carry its own token; otherwise it uses the shared one. Tokens are write-only (Fernet at rest).
+
+| Method + path | Who | Notes |
+|---|---|---|
+| GET /workspaces/{ws}/integrations/github | `ws:integrations:manage` | `{connected, tokenSet, maxRepositories, lastSyncedAt, repositories:[{id, repo, ownToken, lastSyncedAt}]}` |
+| PUT /workspaces/{ws}/integrations/github | same | `{token?, repo?}` sets the shared token and/or adds a repository |
+| POST /workspaces/{ws}/integrations/github/repositories | same | `{repo, token?}`; adding an existing name is a no-op; 409 `too_many_repositories` past the limit |
+| PUT /workspaces/{ws}/integrations/github/repositories/{id} | same | `{token}` sets its own token, or `{useSharedToken:true}` drops it |
+| DELETE /workspaces/{ws}/integrations/github/repositories/{id} | same | stops tracking; synced runs stay as history |
+| DELETE /workspaces/{ws}/integrations/github | same | removes every token and repository |
+| POST /workspaces/{ws}/integrations/github/test | same | `{ok, results:[{repo, ok, reason?}], reason?}`, each repository tested with the token it really uses |
+| GET /workspaces/{ws}/pipelines/runs[?repo=owner/name] | pipelines read | adds `repositories[]` |
+| POST /workspaces/{ws}/pipelines/sync | pipelines execute | syncs every repository; `{synced, repositories, failed:[{repo, reason}]}`; one failure does not stop the others; 502/503 only when all fail |
+
+Re-runs and log reads use the token of the run's own repository. The webhook updates every workspace tracking that repository.

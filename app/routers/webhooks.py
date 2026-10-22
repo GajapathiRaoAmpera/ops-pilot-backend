@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.integrations.github import run_from_api, valid_repo
-from app.models import Integration
+from app.models import Repository
 from app.routers.pipelines import upsert_run
 
 router = APIRouter(tags=["webhooks"])
@@ -33,9 +33,8 @@ async def github_webhook(request: Request, db: Session = Depends(get_db),
     if not run or not valid_repo(repo):
         raise HTTPException(400, "bad_payload")
     updated = 0
-    for integ in db.scalars(select(Integration).where(Integration.provider == "github")):
-        if integ.config.get("repo") == repo:
-            upsert_run(db, integ, run_from_api(run))
-            updated += 1
+    for row in db.scalars(select(Repository).where(Repository.provider == "github", Repository.full_name == repo)):
+        upsert_run(db, row, run_from_api(run))
+        updated += 1
     db.commit()
     return {"updated": updated}

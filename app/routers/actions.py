@@ -13,8 +13,9 @@ from app import audit
 from app.db import get_db
 from app.deps import WorkspaceAccess, csrf_origin_check, workspace_access
 from app.integrations.github import GitHubClient, GitHubError, GitHubFactory
-from app.models import ActionRequest, Approval, Execution, Integration, PipelineRun, User
+from app.models import ActionRequest, Approval, Execution, PipelineRun, User
 from app.rbac import P
+from app.repos import client_for
 from app.routers.pipelines import get_github_factory
 
 router = APIRouter(prefix="/workspaces/{ws_id}", tags=["actions"])
@@ -131,9 +132,8 @@ def decide(req_id: uuid.UUID, body: DecisionBody,
     db.commit()
     audit.record(db, f"approval.{body.decision}", resource=f"request:{req.id}", **_ctx(acc))
     if body.decision == "approve":
-        integ = db.scalar(select(Integration).where(Integration.workspace_id == acc.workspace.id,
-                                                    Integration.provider == "github"))
-        _execute(db, acc, req.id, factory.for_integration(integ))
+        run = db.get(PipelineRun, req.run_id)
+        _execute(db, acc, req.id, client_for(factory, db, acc.workspace.id, run.repo))
     db.expire_all()
     return _full(db, db.get(ActionRequest, req.id))
 
