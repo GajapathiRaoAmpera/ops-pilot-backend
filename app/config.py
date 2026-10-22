@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     github_webhook_secret: str = Field(default="", repr=False)
     sync_min_interval_seconds: int = 15
+    # AI investigations (Groq, OpenAI-compatible API). Logs are redacted and trimmed before they are sent.
+    groq_api_key: str = Field(default="", repr=False)
+    groq_model: str = "openai/gpt-oss-120b"  # must be one the key can use: GET https://api.groq.com/openai/v1/models
+    ai_max_log_chars: int = 12_000
+    ai_investigations_per_minute: int = 5  # per person
 
 
     def production_problems(self) -> list[str]:

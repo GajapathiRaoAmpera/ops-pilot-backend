@@ -91,3 +91,17 @@ may carry its own token; otherwise it uses the shared one. Tokens are write-only
 | POST /workspaces/{ws}/pipelines/sync | pipelines execute | syncs every repository; `{synced, repositories, failed:[{repo, reason}]}`; one failure does not stop the others; 502/503 only when all fail |
 
 Re-runs and log reads use the token of the run's own repository. The webhook updates every workspace tracking that repository.
+
+## AI investigations (IMPLEMENTED, Groq)
+Advisory only. The model never calls GitHub; it may suggest `rerun_failed_jobs` or `none`, and a suggestion becomes a
+normal action request that a different person must approve.
+
+| Method + path | Who | Notes |
+|---|---|---|
+| GET /workspaces/{ws}/investigations/status | `ai:copilot:use` | `{configured, provider, model}`; never the key |
+| GET /workspaces/{ws}/investigations[?runId=&limit=] | same | newest first |
+| POST /workspaces/{ws}/investigations | same | `{runId}`; failed runs only (409 `run_not_failed`); 5 per person per minute (429 `ai_rate_limited`); 503 `ai_not_configured`; 502 `ai_unauthorized`/`ai_model_unavailable`/`ai_unavailable`/`ai_bad_output`/`upstream_error` |
+
+Pipeline: logs fetched with the repository's token -> secrets redacted -> trimmed to error lines plus context
+(`OPSPILOT_AI_MAX_LOG_CHARS`, default 12000) -> sent to Groq inside untrusted-data markers -> output validated:
+evidence quotes must appear in the log (others dropped, confidence lowered), action and confidence restricted to allowlists.

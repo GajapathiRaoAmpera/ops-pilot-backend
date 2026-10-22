@@ -104,6 +104,26 @@ class Repository(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
+class Investigation(Base):
+    """An AI diagnosis of one run. Advisory only: it can suggest an allowlisted action, never run one."""
+    __tablename__ = "investigations"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.workspaces.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.pipeline_runs.id"), index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    root_cause: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[str] = mapped_column(String(16), default="low")
+    evidence: Mapped[list] = mapped_column(JSON, default=list)  # [{"quote", "why"}], quotes verified against the log
+    evidence_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    next_steps: Mapped[list] = mapped_column(JSON, default=list)
+    suggested_action: Mapped[str] = mapped_column(String(64), default="none")  # allowlist: rerun_failed_jobs | none
+    suggestion_reason: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(100), default="")
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+
+
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (UniqueConstraint("workspace_id", "provider", "external_id"),)
