@@ -70,9 +70,9 @@ Org-level endpoints only count org-wide memberships; workspace roles never grant
 ## Google Cloud (read-only) (IMPLEMENTED)
 | Method + path | Who | Notes |
 |---|---|---|
-| GET/PUT/DELETE /workspaces/{ws}/cloud/gcp | `cloud:connections:manage` (Organization Administrator only) | PUT `{key}` is a service-account JSON, write-only (Fernet at rest); GET returns `{connected, projectId, serviceAccount, keySet}` |
-| POST /workspaces/{ws}/cloud/gcp/test | same | `{ok, project}` or `{ok:false, reason: unauthorized|forbidden|not_found|unreachable|error|...}` |
-| GET /workspaces/{ws}/cloud/gcp/inventory | same | `{projectId, compute[], cloudRun[], gke[], errors{api: reason}}`; GET calls only, fixed Google hosts |
+| GET/PUT/DELETE /org/cloud/gcp (was /workspaces/{ws}/cloud/gcp) | `cloud:connections:manage` (Organization Administrator only) | PUT `{key}` is a service-account JSON, write-only (Fernet at rest); GET returns `{connected, projectId, serviceAccount, keySet}` |
+| POST /org/cloud/gcp/test | same | `{ok, project}` or `{ok:false, reason: unauthorized|forbidden|not_found|unreachable|error|...}` |
+| GET /org/cloud/gcp/inventory | same | `{projectId, compute[], cloudRun[], gke[], errors{api: reason}}`; GET calls only, fixed Google hosts |
 
 ## Many repositories per workspace (IMPLEMENTED, supersedes the single `repo` field above)
 A workspace has one GitHub connection holding an optional **shared token**, and up to 50 **repositories**. A repository
@@ -125,3 +125,24 @@ Patch rules (enforced in code, not by the prompt): only files the agent read; no
 or binaries; each edit's `find` must occur exactly once; no added literal credentials; at most 4 files and 120 changed
 lines; code sent to the model capped by `OPSPILOT_AI_MAX_CODE_CHARS` (default 30000).
 Token permissions needed for this action: Contents read/write and Pull requests read/write.
+
+## Active organization and workspace (IMPLEMENTED)
+Cookies `opspilot_org` and `opspilot_ws` are hints set by the frontend; the backend accepts them only for organizations
+and workspaces the user really belongs to, otherwise it falls back to a stable default.
+
+- Org-level endpoints (`/org/*`, `/audit-events`, `/rbac/matrix`) act on the active organization only and check only
+  the org-wide role held **there**. Rights in another organization never count.
+- `GET /auth/me` adds `organizations[{id,name,role}]` and `activeWorkspaceId`; `role` and `permissions` describe the
+  active workspace (org-wide roles plus that workspace's role), not a union across workspaces or organizations.
+- `DELETE /org/members/{id}`: someone who also belongs to another organization is removed from this one only
+  (`{disabled:false}`); the account is disabled only if this was their only organization.
+- `POST /org/members/{id}/reset-link`: 409 `user_in_other_organizations` when the account belongs to another
+  organization (a reset unlocks the whole account).
+
+## Role scopes (IMPLEMENTED)
+- Google Cloud is one connection per organization (`/org/cloud/gcp`, table `cloud_connections`), shared by all workspaces.
+- `ai:investigations:read`: read AI investigations and fix proposals (`GET .../investigations`, `/status`, `GET .../fix-proposals`).
+  Held by every Copilot role and by the Security Auditor, who can read but never run, propose or request.
+- Security Auditor also gains `auto:runbooks:read` (automation history).
+- `ws:audit:read` (Workspace Administrator): `GET /workspaces/{ws}/audit-events`, that workspace only. Org auditors may read it too.
+- `sys:settings:read` is retired. Role permissions are synced exactly on startup (missing ones added, retired ones removed).

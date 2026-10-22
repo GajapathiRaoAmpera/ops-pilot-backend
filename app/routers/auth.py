@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app import audit
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.deps import COOKIE, Principal, csrf_origin_check, current_principal
+from app.deps import COOKIE, WS_COOKIE, Principal, csrf_origin_check, current_principal, resolve_org
 from app.models import AuthSession, Membership, Organization, User, Workspace
 from app.rbac import PLATFORM_PERMISSION
 from app.security import hash_password, hash_token, new_session_token, verify_password
@@ -57,27 +57,43 @@ def login(body: LoginBody, request: Request, response: Response, db: Session = D
 
 
 @router.get("/me")
-def me(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def me(request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Who you are, every organization you belong to, and what you may do in the ACTIVE organization and workspace.
+    The opspilot_org / opspilot_ws cookies only choose among memberships the user really has."""
     base = {"user": {"id": str(p.user.id), "email": p.user.email, "name": p.user.name},
             "mustChangePassword": p.user.must_change_password}
     if p.user.is_platform_admin and not p.memberships:
         # Platform operators manage tenants only; they hold no tenant permissions.
         return {**base, "role": "Platform Administrator", "organization": {"id": "platform", "name": "OpsPilot Platform"},
-                "workspaces": [], "permissions": [PLATFORM_PERMISSION]}
-    if not p.memberships:
+                "organizations": [], "workspaces": [], "activeWorkspaceId": None, "permissions": [PLATFORM_PERMISSION]}
+    org_id = resolve_org(p, request, db)
+    if org_id is None:
         raise HTTPException(403, "no_membership")
-    primary = next((m for m in p.memberships if m.workspace_id is None), p.memberships[0])
-    org = db.get(Organization, primary.org_id)
+    org = db.get(Organization, org_id)
+    in_org = [m for m in p.memberships if m.org_id == org_id]
+
+    def role_for(ms: list[Membership]) -> str:
+        specific = [m for m in ms if m.workspace_id is not None]  # a workspace role is the most precise answer
+        return (specific or ms)[0].role.label
+
     workspaces = []
-    for ws in db.scalars(select(Workspace).where(Workspace.org_id == org.id).order_by(Workspace.name)):
-        ms = [m for m in p.memberships if m.org_id == org.id and m.workspace_id in (None, ws.id)]
+    for ws in db.scalars(select(Workspace).where(Workspace.org_id == org_id).order_by(Workspace.name)):
+        ms = [m for m in in_org if m.workspace_id in (None, ws.id)]
         if ms:
-            workspaces.append({"id": str(ws.id), "name": ws.name, "role": ms[0].role.label})
-    perms = p.permissions([m for m in p.memberships if m.org_id == org.id])  # for navigation only
+            workspaces.append({"id": str(ws.id), "name": ws.name, "role": role_for(ms)})
+    wanted = request.cookies.get(WS_COOKIE)
+    active = next((w for w in workspaces if w["id"] == wanted), workspaces[0] if workspaces else None)
+    scope = [m for m in in_org if m.workspace_id is None or (active and str(m.workspace_id) == active["id"])]
+    perms = p.permissions(scope)  # for navigation; every endpoint still checks for itself
     if p.user.is_platform_admin:
         perms = perms | {PLATFORM_PERMISSION}  # an operator who was also invited into an org keeps both
-    return {**base, "role": primary.role.label, "organization": {"id": str(org.id), "name": org.name},
-            "workspaces": workspaces, "permissions": sorted(perms)}
+
+    organizations = []
+    for o in db.scalars(select(Organization).where(Organization.id.in_(p.org_ids())).order_by(Organization.name)):
+        organizations.append({"id": str(o.id), "name": o.name, "role": role_for([m for m in p.memberships if m.org_id == o.id])})
+    return {**base, "role": active["role"] if active else role_for(in_org),
+            "organization": {"id": str(org.id), "name": org.name}, "organizations": organizations,
+            "workspaces": workspaces, "activeWorkspaceId": active["id"] if active else None, "permissions": sorted(perms)}
 
 
 @router.post("/logout", dependencies=[Depends(csrf_origin_check)])

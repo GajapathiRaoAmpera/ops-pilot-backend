@@ -89,6 +89,20 @@ class Integration(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CloudConnection(Base):
+    """An organization's read-only cloud account (one per provider). The key is Fernet-encrypted, never returned."""
+    __tablename__ = "cloud_connections"
+    __table_args__ = (UniqueConstraint("org_id", "provider"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    config: Mapped[dict] = mapped_column(JSON, default=dict)  # non-secret, e.g. {"projectId", "clientEmail"}
+    secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Repository(Base):
     """A repository a workspace tracks. Uses its own token when set, otherwise the workspace's shared one."""
     __tablename__ = "repositories"

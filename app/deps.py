@@ -8,10 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.models import AuthSession, Membership, User, Workspace
+from app.models import AuthSession, Membership, Organization, User, Workspace
 from app.security import hash_token
 
 COOKIE = "opspilot_session"
+# UI hints for the active organization / workspace. Never trusted: always checked against the user's memberships.
+ORG_COOKIE = "opspilot_org"
+WS_COOKIE = "opspilot_ws"
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 PASSWORD_CHANGE_OK = {"/auth/me", "/auth/logout", "/auth/change-password"}
 
@@ -29,10 +32,15 @@ def csrf_origin_check(request: Request, settings: Settings = Depends(get_setting
 class Principal:
     user: User
     memberships: list[Membership]
+    # Set by require_permission: the one organization an org-level request acts on.
+    active_org: uuid.UUID | None = None
 
-    def org_wide_permissions(self) -> set[str]:
-        """Permissions from org-wide memberships only. Workspace-scoped roles never grant org-level rights."""
-        return self.permissions([m for m in self.memberships if m.workspace_id is None])
+    def org_ids(self) -> set[uuid.UUID]:
+        return {m.org_id for m in self.memberships}
+
+    def org_wide_permissions(self, org_id: uuid.UUID) -> set[str]:
+        """Org-wide memberships IN THIS ORG only. Workspace roles, and rights in other orgs, never count."""
+        return self.permissions([m for m in self.memberships if m.workspace_id is None and m.org_id == org_id])
 
     def permissions(self, memberships: list[Membership] | None = None) -> set[str]:
         ms = self.memberships if memberships is None else memberships
@@ -60,12 +68,31 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def require_permission(permission: str):
-    """Org-level permission check: only org-wide memberships count."""
+def resolve_org(p: Principal, request: Request, db: Session) -> uuid.UUID | None:
+    """The organization the user is working in: the cookie hint if they belong to it, else a stable default
+    (an org where they hold an org-wide role first, then by name). None when they belong to no organization."""
+    ids = p.org_ids()
+    if not ids:
+        return None
+    wanted = request.cookies.get(ORG_COOKIE)
+    try:
+        if wanted and uuid.UUID(wanted) in ids:
+            return uuid.UUID(wanted)
+    except ValueError:
+        pass
+    org_wide = {m.org_id for m in p.memberships if m.workspace_id is None}
+    orgs = db.scalars(select(Organization).where(Organization.id.in_(ids))).all()
+    return min(orgs, key=lambda o: (o.id not in org_wide, o.name.lower(), str(o.id))).id
 
-    def dep(p: Principal = Depends(current_principal)) -> Principal:
-        if permission not in p.org_wide_permissions():
+
+def require_permission(permission: str):
+    """Org-level permission check, scoped to the active organization only."""
+
+    def dep(request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)) -> Principal:
+        org = resolve_org(p, request, db)
+        if org is None or permission not in p.org_wide_permissions(org):
             raise HTTPException(403, "forbidden")
+        p.active_org = org
         return p
 
     return dep
@@ -84,9 +111,10 @@ class WorkspaceAccess:
     permissions: set[str]  # what this user may do in THIS workspace
 
 
-def workspace_access(permission: str):
+def workspace_access(permission: str, *also: str):
     """Workspace-scoped check. Out-of-scope workspaces return 404 (no existence leak);
-    in-scope but lacking the permission returns 403."""
+    in-scope but holding none of the permissions returns 403. Extra permissions are alternatives (any one is enough)."""
+    accepted = {permission, *also}
 
     def dep(
         ws_id: uuid.UUID,
@@ -100,8 +128,9 @@ def workspace_access(permission: str):
         ]
         if ws is None or not applicable:
             raise HTTPException(404, "not_found")
-        if permission not in p.permissions(applicable):
+        granted = p.permissions(applicable)
+        if not accepted & granted:
             raise HTTPException(403, "forbidden")
-        return WorkspaceAccess(p, ws, p.permissions(applicable))
+        return WorkspaceAccess(p, ws, granted)
 
     return dep

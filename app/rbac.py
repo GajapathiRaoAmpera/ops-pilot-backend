@@ -14,10 +14,11 @@ P = {
     "approvals_decide": "approvals:requests:approve",
     "rbac_read": "sys:rbac:read",
     "audit_read": "sec:telemetry:audit",
-    "settings_read": "sys:settings:read",
     "members_manage": "sys:members:manage",  # org-wide: workspaces, org members, resets
     "ws_members_manage": "ws:members:manage",  # invite/manage members of a workspace
     "integrations_manage": "ws:integrations:manage",  # connect/disconnect a workspace's GitHub
+    "ai_read": "ai:investigations:read",  # read AI investigations and fix proposals (no running them)
+    "ws_audit_read": "ws:audit:read",  # audit trail of one workspace
     "cloud_manage": "cloud:connections:manage",  # connect/inspect cloud accounts: Organization Administrator only
 }
 
@@ -26,18 +27,20 @@ ROLES: dict[str, tuple[str, set[str]]] = {
     "workspace_admin": (
         "Workspace Administrator",
         {P["overview_read"], P["pipelines_read"], P["pipelines_execute"], P["automation_read"],
-         P["copilot_use"], P["approvals_read"], P["approvals_decide"], P["settings_read"],
-         P["ws_members_manage"], P["integrations_manage"]},
+         P["copilot_use"], P["ai_read"], P["approvals_read"], P["approvals_decide"],
+         P["ws_members_manage"], P["integrations_manage"], P["ws_audit_read"]},
     ),
     "devops_engineer": (
         "DevOps Engineer",
         {P["overview_read"], P["pipelines_read"], P["pipelines_execute"], P["automation_read"],
-         P["copilot_use"], P["approvals_read"], P["settings_read"]},
+         P["copilot_use"], P["ai_read"], P["approvals_read"]},
     ),
-    "developer": ("Developer", {P["overview_read"], P["pipelines_read"], P["copilot_use"]}),
+    "developer": ("Developer", {P["overview_read"], P["pipelines_read"], P["copilot_use"], P["ai_read"]}),
     "security_auditor": (
         "Security Auditor",
-        {P["overview_read"], P["pipelines_read"], P["approvals_read"], P["rbac_read"], P["audit_read"]},
+        # Read-only reviewer: sees what was requested, approved, executed and what the AI said; can change nothing.
+        {P["overview_read"], P["pipelines_read"], P["approvals_read"], P["automation_read"], P["ai_read"],
+         P["rbac_read"], P["audit_read"]},
     ),
     "viewer": ("Viewer", {P["overview_read"], P["pipelines_read"]}),
 }
@@ -58,9 +61,12 @@ def seed_roles(db: Session) -> dict[str, Role]:
             role = Role(key=key, label=label)
             db.add(role)
             db.flush()
-        have = {rp.permission for rp in role.permissions}
-        for perm in perms - have:
+        # The code is the source of truth: add what is missing AND remove what a role no longer grants.
+        have = {rp.permission: rp for rp in role.permissions}
+        for perm in perms - have.keys():
             db.add(RolePermission(role_id=role.id, permission=perm))
+        for perm in have.keys() - perms:
+            db.delete(have[perm])
         out[key] = role
     db.commit()
     return out

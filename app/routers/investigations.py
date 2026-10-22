@@ -23,6 +23,8 @@ from app.routers.pipelines import get_github_factory
 router = APIRouter(prefix="/workspaces/{ws_id}/investigations", tags=["ai"])
 fixes = APIRouter(prefix="/workspaces/{ws_id}/fix-proposals", tags=["ai"])
 USE = workspace_access(P["copilot_use"])
+# Reading past results is also open to reviewers (Security Auditor) who cannot run anything.
+READ = workspace_access(P["copilot_use"], P["ai_read"])
 FAILED = {"failure", "timed_out", "startup_failure"}
 
 
@@ -47,13 +49,13 @@ def _ctx(acc: WorkspaceAccess) -> dict:
 
 
 @router.get("/status")
-def ai_status(acc: WorkspaceAccess = Depends(USE), settings: Settings = Depends(get_settings)):
+def ai_status(acc: WorkspaceAccess = Depends(READ), settings: Settings = Depends(get_settings)):
     """Whether investigations can run. Never reveals the key."""
     return {"configured": bool(settings.groq_api_key), "provider": "groq", "model": settings.groq_model}
 
 
 @router.get("")
-def list_investigations(runId: uuid.UUID | None = None, limit: int = 20, acc: WorkspaceAccess = Depends(USE),
+def list_investigations(runId: uuid.UUID | None = None, limit: int = 20, acc: WorkspaceAccess = Depends(READ),
                         db: Session = Depends(get_db)):
     q = select(Investigation).where(Investigation.workspace_id == acc.workspace.id)
     if runId:
@@ -122,7 +124,7 @@ def _needs_execute(acc: WorkspaceAccess) -> None:
 
 
 @fixes.get("")
-def list_fixes(runId: uuid.UUID | None = None, acc: WorkspaceAccess = Depends(USE), db: Session = Depends(get_db)):
+def list_fixes(runId: uuid.UUID | None = None, acc: WorkspaceAccess = Depends(READ), db: Session = Depends(get_db)):
     q = select(FixProposal).where(FixProposal.workspace_id == acc.workspace.id)
     if runId:
         q = q.where(FixProposal.run_id == runId)

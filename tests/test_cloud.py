@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import select
 
 from app.main import app
-from app.models import AuditEvent, Integration
+from app.models import AuditEvent, CloudConnection
 from app.routers.cloud import get_transport
 from tests.conftest import ORIGIN, login
 
@@ -34,8 +34,9 @@ def handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(403, json={"error": "disabled"})  # GKE API not enabled
 
 
-def path(ws, tail=""):
-    return f"/workspaces/{ws}/cloud/gcp{tail}"
+def path(_ws=None, tail=""):
+    """One connection per organization: the address no longer names a workspace."""
+    return f"/org/cloud/gcp{tail}"
 
 
 def test_connect_encrypts_key_and_never_returns_it(env):
@@ -46,7 +47,7 @@ def test_connect_encrypts_key_and_never_returns_it(env):
                                                   "serviceAccount": "viewer@demo-project-1.iam.gserviceaccount.com", "keySet": True}
     assert "BEGIN PRIVATE KEY" not in r.text and "BEGIN PRIVATE KEY" not in admin.get(path(ws)).text
     with env["factory"]() as db:
-        row = db.scalar(select(Integration).where(Integration.provider == "gcp"))
+        row = db.scalar(select(CloudConnection).where(CloudConnection.provider == "gcp"))
         assert "PRIVATE KEY" not in row.secret_ciphertext
         assert not any("PRIVATE KEY" in (e.detail + e.resource) for e in db.scalars(select(AuditEvent)))
 
@@ -65,7 +66,10 @@ def test_only_org_admin_can_use_it(env):
         assert c.get(path(ws)).status_code == 403, role
         assert c.put(path(ws), headers=ORIGIN, json={"key": make_key()}).status_code == 403, role
         assert c.get(path(ws, "/inventory")).status_code == 403, role
-    assert login("outsider@b.test").get(path(ws)).status_code == 404  # other tenant
+    admin = login("org_admin@a.test")
+    admin.put(path(ws), headers=ORIGIN, json={"key": make_key()})
+    other = login("outsider@b.test").get(path(ws)).json()  # org B's admin sees B's (empty) connection, never A's
+    assert other["connected"] is False and other["projectId"] is None
 
 
 def test_inventory_is_partial_when_one_api_is_disabled(env):
@@ -82,3 +86,13 @@ def test_inventory_is_partial_when_one_api_is_disabled(env):
     with env["factory"]() as db:
         acts = {e.action for e in db.scalars(select(AuditEvent))}
     assert {"cloud.gcp.connected", "cloud.gcp.inventory", "cloud.gcp.disconnected"} <= acts
+
+
+def test_one_connection_serves_every_workspace_of_the_org(env):
+    admin = login("org_admin@a.test")
+    admin.put(path(), headers=ORIGIN, json={"key": make_key()})
+    admin.cookies.set("opspilot_ws", "anything")  # the workspace no longer matters
+    assert admin.get(path()).json()["connected"] is True
+    with env["factory"]() as db:
+        rows = list(db.scalars(select(CloudConnection)))
+    assert len(rows) == 1 and rows[0].org_id == env["ws_a"].org_id

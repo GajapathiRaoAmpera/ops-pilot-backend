@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import Principal, current_principal, require_permission
+from app.deps import Principal, WorkspaceAccess, current_principal, require_permission, workspace_access
 from app.models import AuditEvent, Role, User
 from app.rbac import ROLES, WORKSPACE_ROLES, WS_ADMIN_GRANTABLE, P
 
@@ -27,14 +27,13 @@ def rbac_matrix(_: Principal = Depends(require_permission(P["rbac_read"])), db: 
                        "permissions": sorted(rp.permission for rp in r.permissions)} for r in roles]}
 
 
-@router.get("/audit-events")
-def audit_events(limit: int = 100, action: str | None = None, outcome: str | None = None,
-                 before_id: int | None = None, p: Principal = Depends(require_permission(P["audit_read"])),
-                 db: Session = Depends(get_db)):
-    org_ids = {m.org_id for m in p.memberships}  # tenant isolation: only the user's orgs
+def _audit_page(db: Session, org_id, workspace_id, limit: int, action: str | None, outcome: str | None,
+                before_id: int | None) -> dict:
     limit = min(max(limit, 1), 500)
     q = (select(AuditEvent, User.name, User.email).outerjoin(User, User.id == AuditEvent.actor_id)
-         .where(AuditEvent.org_id.in_(org_ids)))
+         .where(AuditEvent.org_id == org_id))
+    if workspace_id is not None:
+        q = q.where(AuditEvent.workspace_id == workspace_id)
     if action:
         q = q.where(AuditEvent.action == action[:100])
     if outcome in ("success", "failure"):
@@ -48,3 +47,20 @@ def audit_events(limit: int = 100, action: str | None = None, outcome: str | Non
                         "outcome": e.outcome, "detail": e.detail,
                         "workspaceId": str(e.workspace_id) if e.workspace_id else None} for e, name, email in page],
             "nextBefore": page[-1][0].id if more and page else None}
+
+
+@router.get("/audit-events")
+def audit_events(limit: int = 100, action: str | None = None, outcome: str | None = None,
+                 before_id: int | None = None, p: Principal = Depends(require_permission(P["audit_read"])),
+                 db: Session = Depends(get_db)):
+    """The whole active organization (tenant isolation: only where this permission was checked)."""
+    return _audit_page(db, p.active_org, None, limit, action, outcome, before_id)
+
+
+@router.get("/workspaces/{ws_id}/audit-events")
+def workspace_audit_events(limit: int = 100, action: str | None = None, outcome: str | None = None,
+                           before_id: int | None = None,
+                           acc: WorkspaceAccess = Depends(workspace_access(P["ws_audit_read"], P["audit_read"])),
+                           db: Session = Depends(get_db)):
+    """One workspace's events, for its administrators (org-level auditors may read it too)."""
+    return _audit_page(db, acc.workspace.org_id, acc.workspace.id, limit, action, outcome, before_id)

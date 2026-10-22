@@ -66,7 +66,7 @@ def _dto(inv: Invitation, token: str | None = None) -> dict:
 
 @router.post("/org/invitations", status_code=201, dependencies=[Depends(csrf_origin_check)])
 def invite_org(body: InviteBody, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
-    org_id = p.memberships[0].org_id
+    org_id = p.active_org
     email = body.email.strip().lower()
     if body.role not in ROLES:
         raise HTTPException(422, "unknown_role")
@@ -88,7 +88,7 @@ def invite_org(body: InviteBody, p: Principal = Depends(require_permission(ORG_M
 @router.post("/workspaces/{ws_id}/invitations", status_code=201, dependencies=[Depends(csrf_origin_check)])
 def invite_workspace(body: WsInviteBody, acc: WorkspaceAccess = Depends(workspace_access(P["ws_members_manage"])),
                      db: Session = Depends(get_db)):
-    org_wide = ORG_MGR in acc.principal.org_wide_permissions()
+    org_wide = ORG_MGR in acc.principal.org_wide_permissions(acc.workspace.org_id)
     allowed = WORKSPACE_ROLES if org_wide else WS_ADMIN_GRANTABLE  # no privilege escalation
     if body.role not in allowed:
         raise HTTPException(403, "role_not_grantable")
@@ -105,7 +105,7 @@ def invite_workspace(body: WsInviteBody, acc: WorkspaceAccess = Depends(workspac
 @router.get("/org/invitations")
 def list_invitations(p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
     rows = db.scalars(select(Invitation).where(
-        Invitation.org_id == p.memberships[0].org_id, Invitation.accepted_at.is_(None),
+        Invitation.org_id == p.active_org, Invitation.accepted_at.is_(None),
         Invitation.revoked_at.is_(None), Invitation.expires_at > now()).order_by(Invitation.created_at.desc()))
     return {"invitations": [_dto(i) for i in rows]}
 
@@ -114,7 +114,7 @@ def list_invitations(p: Principal = Depends(require_permission(ORG_MGR)), db: Se
 def revoke_invitation(inv_id: uuid.UUID, p: Principal = Depends(require_permission(ORG_MGR)),
                       db: Session = Depends(get_db)):
     inv = db.get(Invitation, inv_id)
-    if inv is None or inv.org_id != p.memberships[0].org_id:
+    if inv is None or inv.org_id != p.active_org:
         raise HTTPException(404, "not_found")
     inv.revoked_at = now()
     db.commit()

@@ -27,7 +27,9 @@ class WorkspaceBody(BaseModel):
 
 
 def _org(p: Principal) -> uuid.UUID:
-    return p.memberships[0].org_id
+    if p.active_org is None:  # set by require_permission; never act on a guessed organization
+        raise HTTPException(403, "forbidden")
+    return p.active_org
 
 
 def _dto(m: Membership, user: User, ws_name: str | None) -> dict:
@@ -124,23 +126,38 @@ def remove_membership(mid: uuid.UUID, p: Principal = Depends(require_permission(
 
 @router.delete("/org/members/{user_id}", dependencies=[Depends(csrf_origin_check)])
 def disable_member(user_id: uuid.UUID, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
-    """Disables the account everywhere and ends its sessions. Only for users who belong to this org."""
+    """Removes the person from this organization. The account itself is disabled (and its sessions ended) only when
+    it belongs to no other organization: one org's admin must never lock someone out of another org."""
     if user_id == p.user.id:
         raise HTTPException(409, "cannot_disable_self")
-    in_org = db.scalar(select(Membership).where(Membership.user_id == user_id, Membership.org_id == _org(p)))
+    org = _org(p)
+    in_org = db.scalar(select(Membership).where(Membership.user_id == user_id, Membership.org_id == org))
     user = db.get(User, user_id) if in_org else None
     if user is None:
         raise HTTPException(404, "not_found")
+    if _in_other_orgs(db, user.id, org):
+        for m in db.scalars(select(Membership).where(Membership.user_id == user.id, Membership.org_id == org)):
+            db.delete(m)
+        db.commit()
+        audit.record(db, "member.removed_from_org", actor_id=p.user.id, org_id=org, resource=f"user:{user.id}")
+        return {"ok": True, "disabled": False}
     user.disabled = True
     _revoke_sessions(db, user.id)
     db.commit()
-    audit.record(db, "member.disabled", actor_id=p.user.id, org_id=_org(p), resource=f"user:{user.id}")
-    return {"ok": True}
+    audit.record(db, "member.disabled", actor_id=p.user.id, org_id=org, resource=f"user:{user.id}")
+    return {"ok": True, "disabled": True}
+
+
+def _in_other_orgs(db: Session, user_id: uuid.UUID, org: uuid.UUID) -> bool:
+    return db.scalar(select(Membership).where(Membership.user_id == user_id, Membership.org_id != org).limit(1)) is not None
 
 
 @router.post("/org/members/{user_id}/reset-link", status_code=201, dependencies=[Depends(csrf_origin_check)])
 def reset_link(user_id: uuid.UUID, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
     in_org = db.scalar(select(Membership).where(Membership.user_id == user_id, Membership.org_id == _org(p)))
+    if in_org is not None and _in_other_orgs(db, user_id, _org(p)):
+        # A password reset unlocks the whole account, including other organizations: not this admin's to grant.
+        raise HTTPException(409, "user_in_other_organizations")
     user = db.get(User, user_id) if in_org else None
     if user is None or user.is_platform_admin:
         raise HTTPException(404, "not_found")
@@ -169,7 +186,7 @@ def ws_members(acc: WorkspaceAccess = Depends(workspace_access(P["ws_members_man
 def ws_change_role(mid: uuid.UUID, body: RoleBody, acc: WorkspaceAccess = Depends(workspace_access(P["ws_members_manage"])),
                    db: Session = Depends(get_db)):
     m = _ws_membership(db, acc, mid)
-    org_wide = ORG_MGR in acc.principal.org_wide_permissions()
+    org_wide = ORG_MGR in acc.principal.org_wide_permissions(acc.workspace.org_id)
     if m.user_id == acc.principal.user.id:
         raise HTTPException(409, "cannot_change_own_role")
     if body.role not in (WORKSPACE_ROLES if org_wide else WS_ADMIN_GRANTABLE) or (
@@ -186,7 +203,7 @@ def ws_change_role(mid: uuid.UUID, body: RoleBody, acc: WorkspaceAccess = Depend
 def ws_remove(mid: uuid.UUID, acc: WorkspaceAccess = Depends(workspace_access(P["ws_members_manage"])),
               db: Session = Depends(get_db)):
     m = _ws_membership(db, acc, mid)
-    org_wide = ORG_MGR in acc.principal.org_wide_permissions()
+    org_wide = ORG_MGR in acc.principal.org_wide_permissions(acc.workspace.org_id)
     if m.user_id == acc.principal.user.id:
         raise HTTPException(409, "cannot_remove_self")
     if not org_wide and m.role.key == "workspace_admin":
