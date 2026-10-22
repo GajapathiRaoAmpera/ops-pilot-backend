@@ -105,3 +105,23 @@ normal action request that a different person must approve.
 Pipeline: logs fetched with the repository's token -> secrets redacted -> trimmed to error lines plus context
 (`OPSPILOT_AI_MAX_LOG_CHARS`, default 12000) -> sent to Groq inside untrusted-data markers -> output validated:
 evidence quotes must appear in the log (others dropped, confidence lowered), action and confidence restricted to allowlists.
+
+## Fix agent and fix pull requests (IMPLEMENTED, LangGraph + Groq)
+The agent (`app/ai/fix_agent.py`) is a LangGraph graph with READ-ONLY GitHub tools:
+list_files -> choose_files -> read_files -> propose -> check (one retry with the rejection reason) -> END.
+Opening the pull request is a separate, deterministic action that runs only after a different person approves.
+
+| Method + path | Who | Notes |
+|---|---|---|
+| GET /workspaces/{ws}/fix-proposals[?runId=] | `ai:copilot:use` | newest first: `{id, status: proposed|no_fix, title, explanation, files[], diff, baseBranch, baseSha, model, trace[]}` |
+| POST /workspaces/{ws}/fix-proposals | `ai:copilot:use` + `cicd:pipelines:execute` | `{runId}`; failed runs only; 10 per person per hour; writes nothing to GitHub |
+| POST /workspaces/{ws}/action-requests | `cicd:pipelines:execute` | `{runId, type: "open_fix_pr", proposalId, reason}`; risk `high`; the approver sees `proposal.diff` |
+
+Approved `open_fix_pr`: create branch `opspilot/fix-<run>-<id>` at the failing commit, update each file with the blob sha
+the agent read (GitHub refuses if it differs), open a pull request into the run's branch. Never merges.
+Result: `{branch, prNumber, prUrl}`.
+
+Patch rules (enforced in code, not by the prompt): only files the agent read; no `.github/`, lockfiles, `.env*`, keys
+or binaries; each edit's `find` must occur exactly once; no added literal credentials; at most 4 files and 120 changed
+lines; code sent to the model capped by `OPSPILOT_AI_MAX_CODE_CHARS` (default 30000).
+Token permissions needed for this action: Contents read/write and Pull requests read/write.

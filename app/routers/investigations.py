@@ -8,18 +8,20 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import audit
+from app.ai.fix_agent import run_agent
 from app.ai.groq import AiError, GroqClient
-from app.ai.investigate import analyse
+from app.ai.investigate import analyse, focus_log
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import WorkspaceAccess, csrf_origin_check, workspace_access
 from app.integrations.github import GitHubError, GitHubFactory
-from app.models import Investigation, PipelineRun, User
+from app.models import FixProposal, Investigation, PipelineRun, User
 from app.rbac import P
 from app.repos import client_for
 from app.routers.pipelines import get_github_factory
 
 router = APIRouter(prefix="/workspaces/{ws_id}/investigations", tags=["ai"])
+fixes = APIRouter(prefix="/workspaces/{ws_id}/fix-proposals", tags=["ai"])
 USE = workspace_access(P["copilot_use"])
 FAILED = {"failure", "timed_out", "startup_failure"}
 
@@ -102,3 +104,75 @@ def investigate(body: InvestigateBody, acc: WorkspaceAccess = Depends(USE), db: 
     audit.record(db, "ai.investigation", resource=f"run:{run.id}",
                  detail=f"confidence={out['confidence']} suggested={out['suggestedAction']}", **_ctx(acc))
     return _dto(db, row)
+
+
+# ---------------------------------------------------------------- fix proposals (LangGraph agent)
+
+def _fix_dto(db: Session, f: FixProposal) -> dict:
+    who = db.get(User, f.created_by)
+    return {"id": str(f.id), "runId": str(f.run_id), "status": f.status, "title": f.title, "explanation": f.explanation,
+            "files": [x["path"] for x in f.files], "diff": f.diff, "baseBranch": f.base_branch, "baseSha": f.base_sha[:7],
+            "model": f.model, "trace": f.trace, "createdAt": f.created_at.isoformat(), "createdBy": who.name if who else None}
+
+
+def _needs_execute(acc: WorkspaceAccess) -> None:
+    """Proposing code needs the Copilot AND the right to request changes (DevOps engineer, admins)."""
+    if P["pipelines_execute"] not in acc.permissions:
+        raise HTTPException(403, "forbidden")
+
+
+@fixes.get("")
+def list_fixes(runId: uuid.UUID | None = None, acc: WorkspaceAccess = Depends(USE), db: Session = Depends(get_db)):
+    q = select(FixProposal).where(FixProposal.workspace_id == acc.workspace.id)
+    if runId:
+        q = q.where(FixProposal.run_id == runId)
+    return {"proposals": [_fix_dto(db, f) for f in db.scalars(q.order_by(FixProposal.created_at.desc()).limit(20))]}
+
+
+@fixes.post("", dependencies=[Depends(csrf_origin_check)])
+def propose_fix(body: InvestigateBody, acc: WorkspaceAccess = Depends(USE), db: Session = Depends(get_db),
+                settings: Settings = Depends(get_settings), ai: GroqClient = Depends(get_ai),
+                factory: GitHubFactory = Depends(get_github_factory)):
+    _needs_execute(acc)
+    run = db.get(PipelineRun, body.runId)
+    if run is None or run.workspace_id != acc.workspace.id:
+        raise HTTPException(404, "not_found")
+    if run.conclusion not in FAILED:
+        raise HTTPException(409, "run_not_failed")
+    if not settings.groq_api_key:
+        raise HTTPException(503, "ai_not_configured")
+    since = datetime.now(UTC) - timedelta(hours=1)
+    recent = db.scalar(select(func.count()).select_from(FixProposal).where(
+        FixProposal.created_by == acc.principal.user.id, FixProposal.created_at >= since)) or 0
+    if recent >= settings.ai_fix_proposals_per_hour:
+        raise HTTPException(429, "ai_rate_limited")
+    if len(run.commit_sha) != 40:
+        raise HTTPException(409, "run_commit_unknown")
+
+    gh = client_for(factory, db, acc.workspace.id, run.repo)
+    if not gh.configured:
+        raise HTTPException(503, "github_not_configured")
+    try:
+        log = gh.get_logs(run.repo, run.external_id)
+    except GitHubError as exc:
+        raise HTTPException(502, "upstream_error") from exc
+    latest = db.scalar(select(Investigation).where(Investigation.run_id == run.id)
+                       .order_by(Investigation.created_at.desc()).limit(1))
+    diagnosis = f"{latest.summary} {latest.root_cause}" if latest else "No earlier diagnosis."
+    try:
+        state = run_agent(gh, ai, repo=run.repo, ref=run.commit_sha, log=focus_log(log, settings.ai_max_log_chars),
+                          diagnosis=diagnosis, budget=settings.ai_max_code_chars)
+    except AiError as exc:
+        audit.record(db, "ai.fix_proposal", resource=f"run:{run.id}", outcome="failure", detail=str(exc), **_ctx(acc))
+        raise HTTPException(503 if str(exc) == "ai_not_configured" else 502, str(exc)) from exc
+
+    result = state.get("result") or {"status": "no_fix", "reason": "The agent stopped without a result."}
+    row = FixProposal(org_id=acc.workspace.org_id, workspace_id=acc.workspace.id, run_id=run.id, status=result["status"],
+                      title=result.get("title", ""), explanation=result.get("explanation") or result.get("reason", ""),
+                      files=result.get("files", []), diff=result.get("diff", ""), base_branch=run.branch,
+                      base_sha=run.commit_sha, model=ai.model, trace=state.get("trace", []), created_by=acc.principal.user.id)
+    db.add(row)
+    db.commit()
+    audit.record(db, "ai.fix_proposal", resource=f"run:{run.id}",
+                 detail=f"{row.status}: {', '.join(x['path'] for x in row.files)}"[:1000], **_ctx(acc))
+    return _fix_dto(db, row)

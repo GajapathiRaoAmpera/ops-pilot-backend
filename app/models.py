@@ -124,6 +124,26 @@ class Investigation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
 
 
+class FixProposal(Base):
+    """A code change proposed by the fix agent. Nothing reaches GitHub until a different person approves it."""
+    __tablename__ = "fix_proposals"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.workspaces.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.pipeline_runs.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16))  # proposed | no_fix
+    title: Mapped[str] = mapped_column(String(200), default="")
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    files: Mapped[list] = mapped_column(JSON, default=list)  # [{"path", "blobSha", "newText"}]
+    diff: Mapped[str] = mapped_column(Text, default="")
+    base_branch: Mapped[str] = mapped_column(String(200), default="")
+    base_sha: Mapped[str] = mapped_column(String(40), default="")
+    model: Mapped[str] = mapped_column(String(100), default="")
+    trace: Mapped[list] = mapped_column(JSON, default=list)  # what the agent did, step by step (no file contents)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+
+
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (UniqueConstraint("workspace_id", "provider", "external_id"),)
@@ -166,13 +186,14 @@ class ActionRequest(Base):
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.organizations.id"))
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.workspaces.id"), index=True)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.pipeline_runs.id"))
-    type: Mapped[str] = mapped_column(String(64))  # allowlisted: rerun_failed_jobs
+    type: Mapped[str] = mapped_column(String(64))  # allowlisted: rerun_failed_jobs | open_fix_pr
     risk: Mapped[str] = mapped_column(String(16))
     # pending | rejected | approved | executing | succeeded | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     reason: Mapped[str] = mapped_column(String(1000), default="")
     requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    proposal_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opspilot.fix_proposals.id"), nullable=True)
 
 
 class Approval(Base):

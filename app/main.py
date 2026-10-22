@@ -52,6 +52,7 @@ app.include_router(actions.router)
 app.include_router(integrations.router)
 app.include_router(cloud.router)
 app.include_router(investigations.router)
+app.include_router(investigations.fixes)
 app.include_router(governance.router)
 app.include_router(webhooks.router)
 

@@ -12,6 +12,7 @@ dependencies = [
   "pydantic-settings>=2.4",
   "argon2-cffi>=23.1",
   "cryptography>=43",
+  "langgraph>=1.2.16",
 ]
 
 [dependency-groups]

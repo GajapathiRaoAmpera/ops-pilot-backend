@@ -158,7 +158,7 @@ def overview(acc: WorkspaceAccess = Depends(workspace_access(P["overview_read"])
                             .order_by(ActionRequest.created_at.desc()).limit(5)):
             run = db.get(PipelineRun, r.run_id)
             who = db.get(User, r.requested_by)
-            pending_items.append({"id": str(r.id), "risk": r.risk, "createdAt": r.created_at.isoformat(),
+            pending_items.append({"id": str(r.id), "type": r.type, "risk": r.risk, "createdAt": r.created_at.isoformat(),
                                   "requester": who.name if who else None,
                                   "workflow": run.workflow if run else "", "repo": run.repo if run else "",
                                   "branch": run.branch if run else ""})

@@ -1,4 +1,4 @@
-"""Action requests, approvals and execution. Allowlisted action: rerun_failed_jobs only."""
+"""Action requests, approvals and execution. Allowlisted actions: rerun_failed_jobs, open_fix_pr."""
 import uuid
 from datetime import UTC, datetime
 from typing import Literal
@@ -13,19 +13,20 @@ from app import audit
 from app.db import get_db
 from app.deps import WorkspaceAccess, csrf_origin_check, workspace_access
 from app.integrations.github import GitHubClient, GitHubError, GitHubFactory
-from app.models import ActionRequest, Approval, Execution, PipelineRun, User
+from app.models import ActionRequest, Approval, Execution, FixProposal, PipelineRun, User
 from app.rbac import P
 from app.repos import client_for
 from app.routers.pipelines import get_github_factory
 
 router = APIRouter(prefix="/workspaces/{ws_id}", tags=["actions"])
-ACTION_TYPES = {"rerun_failed_jobs"}
+ACTION_TYPES = {"rerun_failed_jobs", "open_fix_pr"}
 
 
 class RequestBody(BaseModel):
     runId: uuid.UUID
-    type: Literal["rerun_failed_jobs"]
+    type: Literal["rerun_failed_jobs", "open_fix_pr"]
     reason: str = Field(default="", max_length=1000)
+    proposalId: uuid.UUID | None = None  # required for open_fix_pr
 
 
 class DecisionBody(BaseModel):
@@ -33,7 +34,9 @@ class DecisionBody(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
-def _risk(run: PipelineRun) -> str:
+def _risk(run: PipelineRun, action: str) -> str:
+    if action == "open_fix_pr":
+        return "high"  # changes code; a person still reviews the pull request before merging
     return "medium" if run.branch in {"main", "master"} or run.branch.startswith("release") else "low"
 
 
@@ -47,6 +50,7 @@ def _dto(r: ActionRequest, approval: Approval | None, ex: Execution | None) -> d
         "execution": None if ex is None else {
             "id": str(ex.id), "status": ex.status, "error": ex.error, "result": ex.result,
             "endedAt": ex.ended_at.isoformat() if ex.ended_at else None},
+        "proposalId": str(r.proposal_id) if r.proposal_id else None,
     }
 
 
@@ -59,6 +63,11 @@ def _full(db: Session, r: ActionRequest) -> dict:
     out["run"] = None if run is None else {
         "repo": run.repo, "workflow": run.workflow, "branch": run.branch, "commit": run.commit_sha[:7],
         "status": run.status, "conclusion": run.conclusion, "url": run.html_url}
+    if r.proposal_id:
+        fix = db.get(FixProposal, r.proposal_id)
+        out["proposal"] = None if fix is None else {
+            "title": fix.title, "explanation": fix.explanation, "diff": fix.diff,
+            "files": [x["path"] for x in fix.files], "model": fix.model}
     requester = db.get(User, r.requested_by)
     out["requester"] = {"name": requester.name, "email": requester.email} if requester else None
     if approval is not None and out["decision"] is not None:
@@ -84,15 +93,24 @@ def create_request(body: RequestBody, acc: WorkspaceAccess = Depends(workspace_a
     run = db.get(PipelineRun, body.runId)
     if run is None or run.workspace_id != acc.workspace.id:
         raise HTTPException(404, "not_found")
-    if run.status != "completed" or run.conclusion != "failure":
+    failed = {"failure", "timed_out", "startup_failure"} if body.type == "open_fix_pr" else {"failure"}
+    if run.status != "completed" or run.conclusion not in failed:
         raise HTTPException(409, "run_not_failed")
+    proposal = None
+    if body.type == "open_fix_pr":
+        proposal = db.get(FixProposal, body.proposalId) if body.proposalId else None
+        if proposal is None or proposal.workspace_id != acc.workspace.id or proposal.run_id != run.id:
+            raise HTTPException(404, "proposal_not_found")
+        if proposal.status != "proposed":
+            raise HTTPException(409, "proposal_has_no_fix")
     open_req = db.scalar(select(ActionRequest).where(
         ActionRequest.run_id == run.id, ActionRequest.type == body.type,
         ActionRequest.status.in_(["pending", "approved", "executing"])))
     if open_req is not None:
         raise HTTPException(409, "request_already_open")
     req = ActionRequest(org_id=run.org_id, workspace_id=run.workspace_id, run_id=run.id, type=body.type,
-                        risk=_risk(run), reason=body.reason, requested_by=acc.principal.user.id)
+                        risk=_risk(run, body.type), reason=body.reason, requested_by=acc.principal.user.id,
+                        proposal_id=proposal.id if proposal else None)
     db.add(req)
     db.commit()
     audit.record(db, "action.requested", resource=f"request:{req.id}", detail=f"{req.type} risk={req.risk}",
@@ -156,13 +174,16 @@ def _execute(db: Session, acc: WorkspaceAccess, req_id: uuid.UUID, gh: GitHubCli
     try:
         if not gh.configured:
             raise GitHubError("github_not_configured")
-        gh.rerun_failed_jobs(run.repo, run.external_id)
-        result = {"requested": "rerun_failed_jobs", "runExternalId": run.external_id}
-        try:  # verification is best-effort; it is reported, not assumed
-            current = gh.get_run(run.repo, run.external_id)
-            result["observedStatus"] = current.status
-        except GitHubError:
-            result["observedStatus"] = "unverified"
+        if req.type == "open_fix_pr":
+            result = _open_fix_pr(db, gh, req, run, acc)
+        else:
+            gh.rerun_failed_jobs(run.repo, run.external_id)
+            result = {"requested": "rerun_failed_jobs", "runExternalId": run.external_id}
+            try:  # verification is best-effort; it is reported, not assumed
+                current = gh.get_run(run.repo, run.external_id)
+                result["observedStatus"] = current.status
+            except GitHubError:
+                result["observedStatus"] = "unverified"
     except GitHubError as exc:
         status, error = "failed", str(exc)[:500]
     ex.status, ex.error, ex.result, ex.ended_at = status, error, result, datetime.now(UTC)
@@ -170,6 +191,29 @@ def _execute(db: Session, acc: WorkspaceAccess, req_id: uuid.UUID, gh: GitHubCli
     db.commit()
     audit.record(db, f"execution.{status}", resource=f"execution:{ex.id}", outcome="success" if status == "succeeded" else "failure",
                  detail=error, **_ctx(acc))
+
+
+def _open_fix_pr(db: Session, gh: GitHubClient, req: ActionRequest, run: PipelineRun, acc: WorkspaceAccess) -> dict:
+    """Deterministic, no AI: branch at the failing commit, commit exactly the approved files, open a pull request.
+
+    Each file write carries the blob sha the agent read, so GitHub refuses it if the file is not what was reviewed.
+    The pull request targets the run's branch and is never merged here.
+    """
+    fix = db.get(FixProposal, req.proposal_id)
+    if fix is None or fix.status != "proposed" or not fix.files:
+        raise GitHubError("proposal_not_found")
+    branch = f"opspilot/fix-{run.external_id}-{fix.id.hex[:6]}"
+    gh.create_branch(run.repo, branch, fix.base_sha)
+    approver = acc.principal.user
+    for f in fix.files:
+        gh.put_file(run.repo, f["path"], branch, f["newText"], f["blobSha"],
+                    f"{fix.title}\n\nProposed by the OpsPilot fix agent; approved by {approver.name} in OpsPilot.")
+    body = (f"{fix.explanation}\n\n---\n"
+            f"- Failed run: {run.html_url}\n- Proposed by the OpsPilot fix agent ({fix.model})\n"
+            f"- Approved in OpsPilot by {approver.name}\n\n"
+            "**Review before merging.** This change was generated by AI. CI on this pull request is the test.")
+    pr = gh.create_pull(run.repo, head=branch, base=run.branch, title=f"[OpsPilot] {fix.title}"[:250], body=body)
+    return {"requested": "open_fix_pr", "branch": branch, "prNumber": pr["number"], "prUrl": pr["url"]}
 
 
 @router.get("/executions")

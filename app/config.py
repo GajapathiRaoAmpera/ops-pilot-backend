@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-120b"  # must be one the key can use: GET https://api.groq.com/openai/v1/models
     ai_max_log_chars: int = 12_000
     ai_investigations_per_minute: int = 5  # per person
+    ai_max_code_chars: int = 30_000  # source code the fix agent may send to the model per proposal
+    ai_fix_proposals_per_hour: int = 10  # per person
 
 
     def production_problems(self) -> list[str]:
