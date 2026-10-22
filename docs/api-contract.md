@@ -66,3 +66,10 @@ Org-level endpoints only count org-wide memberships; workspace roles never grant
 | GET /workspaces/{ws}/overview | overview read | now also `approvals.items` (needs approvals read), `recentExecutions` (needs automation read), `activity` (needs audit read) and `visible` flags; omitted sections are empty, never invented |
 | GET /workspaces/{ws}/executions[?status=&limit=] | automation read | automation history: approved actions that executed, with run, decision and execution result |
 
+
+## Google Cloud (read-only) (IMPLEMENTED)
+| Method + path | Who | Notes |
+|---|---|---|
+| GET/PUT/DELETE /workspaces/{ws}/cloud/gcp | `cloud:connections:manage` (Organization Administrator only) | PUT `{key}` is a service-account JSON, write-only (Fernet at rest); GET returns `{connected, projectId, serviceAccount, keySet}` |
+| POST /workspaces/{ws}/cloud/gcp/test | same | `{ok, project}` or `{ok:false, reason: unauthorized|forbidden|not_found|unreachable|error|...}` |
+| GET /workspaces/{ws}/cloud/gcp/inventory | same | `{projectId, compute[], cloudRun[], gke[], errors{api: reason}}`; GET calls only, fixed Google hosts |

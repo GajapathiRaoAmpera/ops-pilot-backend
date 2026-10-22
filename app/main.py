@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.routers import (
     actions,
     auth,
+    cloud,
     governance,
     integrations,
     invitations,
@@ -48,6 +49,7 @@ app.include_router(platform.router)
 app.include_router(pipelines.router)
 app.include_router(actions.router)
 app.include_router(integrations.router)
+app.include_router(cloud.router)
 app.include_router(governance.router)
 app.include_router(webhooks.router)
 

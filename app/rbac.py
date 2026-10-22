@@ -18,6 +18,7 @@ P = {
     "members_manage": "sys:members:manage",  # org-wide: workspaces, org members, resets
     "ws_members_manage": "ws:members:manage",  # invite/manage members of a workspace
     "integrations_manage": "ws:integrations:manage",  # connect/disconnect a workspace's GitHub
+    "cloud_manage": "cloud:connections:manage",  # connect/inspect cloud accounts: Organization Administrator only
 }
 
 ROLES: dict[str, tuple[str, set[str]]] = {
