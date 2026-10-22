@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Invitation, Role
+from app.models import Invitation, Organization, Role
 from app.security import hash_token
 
 
@@ -48,4 +48,8 @@ def find_valid(db: Session, token: str) -> Invitation | None:
     inv = db.scalar(select(Invitation).where(Invitation.token_hash == hash_token(token)))
     if inv is None or inv.accepted_at or inv.revoked_at or aware(inv.expires_at) <= now():
         return None
+    if inv.kind == "invite":  # joining a blocked or archived organization must not work through an old link
+        org = db.get(Organization, inv.org_id)
+        if org is None or org.status != "active":
+            return None
     return inv

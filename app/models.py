@@ -19,6 +19,9 @@ class Organization(Base):
     __tablename__ = "organizations"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_id)
     name: Mapped[str] = mapped_column(String(200))
+    # active | suspended (blocked: nobody inside has access) | archived ("deleted": blocked and hidden, data kept)
+    status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Workspace(Base):
@@ -64,6 +67,8 @@ class Membership(Base):
     workspace_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opspilot.workspaces.id"), nullable=True)
     role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("opspilot.roles.id"))
     role: Mapped[Role] = relationship(lazy="joined")
+    # Blocked by an admin: the membership stays (so it can be unblocked) but grants nothing.
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class AuthSession(Base):

@@ -7,6 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app import audit
+from app import member_ops as ops
 from app.db import get_db
 from app.deps import (
     Principal,
@@ -18,7 +19,7 @@ from app.deps import (
 )
 from app.models import AuthSession, Invitation, Membership, Organization, Role, User, Workspace
 from app.onboarding import aware, create_invitation, find_valid, now
-from app.rbac import ROLES, WORKSPACE_ROLES, WS_ADMIN_GRANTABLE, P
+from app.rbac import WORKSPACE_ROLES, WS_ADMIN_GRANTABLE, P
 from app.security import hash_password
 
 router = APIRouter(tags=["invitations"])
@@ -47,15 +48,6 @@ class TokenBody(BaseModel):
     token: str = Field(min_length=20, max_length=200)
 
 
-def _already_member(db: Session, org_id: uuid.UUID, workspace_id: uuid.UUID | None, email: str) -> bool:
-    user = db.scalar(select(User).where(User.email == email))
-    if user is None:
-        return False
-    q = select(Membership).where(Membership.user_id == user.id, Membership.org_id == org_id)
-    q = q.where(Membership.workspace_id.is_(None) if workspace_id is None else Membership.workspace_id == workspace_id)
-    return db.scalar(q) is not None
-
-
 def _dto(inv: Invitation, token: str | None = None) -> dict:
     out = {"id": str(inv.id), "email": inv.email, "kind": inv.kind, "expiresAt": aware(inv.expires_at).isoformat(),
            "workspaceId": str(inv.workspace_id) if inv.workspace_id else None}
@@ -66,22 +58,7 @@ def _dto(inv: Invitation, token: str | None = None) -> dict:
 
 @router.post("/org/invitations", status_code=201, dependencies=[Depends(csrf_origin_check)])
 def invite_org(body: InviteBody, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
-    org_id = p.active_org
-    email = body.email.strip().lower()
-    if body.role not in ROLES:
-        raise HTTPException(422, "unknown_role")
-    if body.workspaceId is not None:
-        ws = db.get(Workspace, body.workspaceId)
-        if ws is None or ws.org_id != org_id:
-            raise HTTPException(404, "not_found")
-        if body.role not in WORKSPACE_ROLES:
-            raise HTTPException(422, "role_not_allowed_for_workspace")
-    if _already_member(db, org_id, body.workspaceId, email):
-        raise HTTPException(409, "already_member")
-    inv, token = create_invitation(db, kind="invite", org_id=org_id, email=email, invited_by=p.user.id,
-                                   role_key=body.role, workspace_id=body.workspaceId)
-    audit.record(db, "invitation.created", actor_id=p.user.id, org_id=org_id, workspace_id=body.workspaceId,
-                 resource=f"invitation:{inv.id}", detail=f"role={body.role}")
+    inv, token = ops.invite(db, p.active_org, body.email, body.role, body.workspaceId, p.user)
     return _dto(inv, token)
 
 
@@ -93,7 +70,7 @@ def invite_workspace(body: WsInviteBody, acc: WorkspaceAccess = Depends(workspac
     if body.role not in allowed:
         raise HTTPException(403, "role_not_grantable")
     email = body.email.strip().lower()
-    if _already_member(db, acc.workspace.org_id, acc.workspace.id, email):
+    if ops.already_member(db, acc.workspace.org_id, acc.workspace.id, email):
         raise HTTPException(409, "already_member")
     inv, token = create_invitation(db, kind="invite", org_id=acc.workspace.org_id, email=email,
                                    invited_by=acc.principal.user.id, role_key=body.role, workspace_id=acc.workspace.id)
@@ -184,7 +161,7 @@ def accept_existing(body: TokenBody, p: Principal = Depends(current_principal), 
     inv = find_valid(db, body.token)
     if inv is None or inv.kind != "invite" or inv.email != p.user.email.lower():
         raise HTTPException(404, "invalid_or_expired")  # the link only works for the invited account
-    if _already_member(db, inv.org_id, inv.workspace_id, inv.email):
+    if ops.already_member(db, inv.org_id, inv.workspace_id, inv.email):
         raise HTTPException(409, "already_member")
     if not _consume(db, inv):
         db.rollback()

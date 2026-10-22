@@ -146,3 +146,21 @@ and workspaces the user really belongs to, otherwise it falls back to a stable d
 - Security Auditor also gains `auto:runbooks:read` (automation history).
 - `ws:audit:read` (Workspace Administrator): `GET /workspaces/{ws}/audit-events`, that workspace only. Org auditors may read it too.
 - `sys:settings:read` is retired. Role permissions are synced exactly on startup (missing ones added, retired ones removed).
+
+## Blocking and platform administration (IMPLEMENTED)
+Organization `status`: `active` | `suspended` (blocked) | `archived` ("deleted": blocked and hidden, data kept).
+Membership `blocked`. A blocked membership, or any membership in a non-active organization, grants nothing from the
+next request on; sign-in returns 403 `access_blocked` when nothing usable is left. Invitations into a non-active
+organization stop working. Shared rules live in `app/member_ops.py` for both admin levels.
+
+| Method + path | Who | Notes |
+|---|---|---|
+| POST /org/members/{userId}/block, /unblock | Org Admin | this organization only; not yourself; never the last active org admin |
+| PATCH /platform/organizations/{id} | Platform Admin | `{name?, status?: active|suspended}` (rename, block, reactivate/restore) |
+| DELETE /platform/organizations/{id} | Platform Admin | `{confirm: <name>}`; must be blocked first; archives |
+| GET /platform/organizations/{id}/members, /workspaces | Platform Admin | people and workspaces (never runs, approvals, logs) |
+| POST /platform/organizations/{id}/invitations | Platform Admin | any role, org-wide or one workspace |
+| PATCH/DELETE /platform/organizations/{id}/memberships/{mid} | Platform Admin | same rules as org admins (last-admin guard) |
+| POST /platform/organizations/{id}/members/{userId}/block | Platform Admin | `{blocked}` in that organization |
+| POST /platform/organizations/{id}/members/{userId}/reset-link | Platform Admin | any person, including members of several organizations |
+| POST /platform/users/{userId}/block | Platform Admin | `{blocked}` whole account, sessions ended; not platform admins |

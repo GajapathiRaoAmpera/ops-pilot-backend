@@ -9,7 +9,15 @@ from sqlalchemy.orm import Session
 from app import audit
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.deps import COOKIE, WS_COOKIE, Principal, csrf_origin_check, current_principal, resolve_org
+from app.deps import (
+    COOKIE,
+    WS_COOKIE,
+    Principal,
+    csrf_origin_check,
+    current_principal,
+    resolve_org,
+    usable_memberships,
+)
 from app.models import AuthSession, Membership, Organization, User, Workspace
 from app.rbac import PLATFORM_PERMISSION
 from app.security import hash_password, hash_token, new_session_token, verify_password
@@ -45,12 +53,16 @@ def login(body: LoginBody, request: Request, response: Response, db: Session = D
         audit.record(db, "auth.login", outcome="failure", resource=f"user:{email}"[:200])
         raise HTTPException(401, "invalid_credentials")
     _FAILS.pop(key, None)
+    usable = usable_memberships(db, user.id)
+    if not usable and not user.is_platform_admin:
+        # Right password, but every organization they belong to is blocked (or they are blocked in it).
+        audit.record(db, "auth.login", actor_id=user.id, outcome="failure", detail="access_blocked")
+        raise HTTPException(403, "access_blocked")
     token, digest = new_session_token()
     db.add(AuthSession(id_hash=digest, user_id=user.id,
                        expires_at=datetime.now(UTC) + timedelta(hours=s.session_ttl_hours)))
     db.commit()
-    first = db.scalar(select(Membership).where(Membership.user_id == user.id))
-    audit.record(db, "auth.login", actor_id=user.id, org_id=first.org_id if first else None)
+    audit.record(db, "auth.login", actor_id=user.id, org_id=usable[0].org_id if usable else None)
     response.set_cookie(COOKIE, token, httponly=True, secure=s.cookie_secure, samesite="lax",
                         max_age=s.session_ttl_hours * 3600, path="/")
     return {"ok": True}
@@ -62,13 +74,13 @@ def me(request: Request, p: Principal = Depends(current_principal), db: Session 
     The opspilot_org / opspilot_ws cookies only choose among memberships the user really has."""
     base = {"user": {"id": str(p.user.id), "email": p.user.email, "name": p.user.name},
             "mustChangePassword": p.user.must_change_password}
-    if p.user.is_platform_admin and not p.memberships:
-        # Platform operators manage tenants only; they hold no tenant permissions.
+    if p.user.is_platform_admin:
+        # Platform operators manage tenants only; they hold no tenant permissions, even if also invited into an org.
         return {**base, "role": "Platform Administrator", "organization": {"id": "platform", "name": "OpsPilot Platform"},
                 "organizations": [], "workspaces": [], "activeWorkspaceId": None, "permissions": [PLATFORM_PERMISSION]}
     org_id = resolve_org(p, request, db)
     if org_id is None:
-        raise HTTPException(403, "no_membership")
+        raise HTTPException(403, "access_blocked")  # no usable membership: blocked, or every org blocked
     org = db.get(Organization, org_id)
     in_org = [m for m in p.memberships if m.org_id == org_id]
 
@@ -85,8 +97,6 @@ def me(request: Request, p: Principal = Depends(current_principal), db: Session 
     active = next((w for w in workspaces if w["id"] == wanted), workspaces[0] if workspaces else None)
     scope = [m for m in in_org if m.workspace_id is None or (active and str(m.workspace_id) == active["id"])]
     perms = p.permissions(scope)  # for navigation; every endpoint still checks for itself
-    if p.user.is_platform_admin:
-        perms = perms | {PLATFORM_PERMISSION}  # an operator who was also invited into an org keeps both
 
     organizations = []
     for o in db.scalars(select(Organization).where(Organization.id.in_(p.org_ids())).order_by(Organization.name)):

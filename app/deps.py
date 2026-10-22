@@ -44,6 +44,8 @@ class Principal:
 
     def permissions(self, memberships: list[Membership] | None = None) -> set[str]:
         ms = self.memberships if memberships is None else memberships
+        if self.user.is_platform_admin:
+            return set()  # platform operators govern tenants from /platform; they never act inside one
         return {rp.permission for m in ms for rp in m.role.permissions}
 
 
@@ -60,8 +62,14 @@ def current_principal(request: Request, db: Session = Depends(get_db)) -> Princi
         raise HTTPException(401, "unauthenticated")
     if user.must_change_password and request.url.path not in PASSWORD_CHANGE_OK:
         raise HTTPException(403, "password_change_required")
-    ms = list(db.scalars(select(Membership).where(Membership.user_id == user.id)))
-    return Principal(user, ms)
+    return Principal(user, usable_memberships(db, user.id))
+
+
+def usable_memberships(db: Session, user_id: uuid.UUID) -> list[Membership]:
+    """Memberships that grant access right now: not blocked, in an organization that is active.
+    Blocking takes effect on the very next request, even for sessions that are already open."""
+    return list(db.scalars(select(Membership).join(Organization, Organization.id == Membership.org_id).where(
+        Membership.user_id == user_id, Membership.blocked.is_(False), Organization.status == "active")))
 
 
 def _aware(dt: datetime) -> datetime:

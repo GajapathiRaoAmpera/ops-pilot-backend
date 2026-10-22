@@ -1,6 +1,5 @@
 """Membership administration. Org admins manage the whole org; workspace admins only their workspace."""
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -8,11 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import audit
+from app import member_ops as ops
 from app.db import get_db
 from app.deps import Principal, WorkspaceAccess, csrf_origin_check, require_permission, workspace_access
-from app.models import AuthSession, Membership, Role, User, Workspace
-from app.onboarding import create_invitation
-from app.rbac import ROLES, WORKSPACE_ROLES, WS_ADMIN_GRANTABLE, P
+from app.models import Membership, User, Workspace
+from app.rbac import WORKSPACE_ROLES, WS_ADMIN_GRANTABLE, P
 from app.routers.invitations import ORG_MGR
 
 router = APIRouter(tags=["members"])
@@ -32,37 +31,11 @@ def _org(p: Principal) -> uuid.UUID:
     return p.active_org
 
 
-def _dto(m: Membership, user: User, ws_name: str | None) -> dict:
-    return {"membershipId": str(m.id), "userId": str(user.id), "email": user.email, "name": user.name,
-            "role": m.role.key, "roleLabel": m.role.label, "workspaceId": str(m.workspace_id) if m.workspace_id else None,
-            "workspace": ws_name, "disabled": user.disabled}
-
-
-def _org_admin_count(db: Session, org_id: uuid.UUID) -> int:
-    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(
-        Membership.org_id == org_id, Membership.workspace_id.is_(None), User.disabled.is_(False))).all()
-    return sum(1 for m, _ in rows if m.role.key == "org_admin")
-
-
-def _role(db: Session, key: str) -> Role:
-    if key not in ROLES:
-        raise HTTPException(422, "unknown_role")
-    return db.scalar(select(Role).where(Role.key == key))
-
-
-def _revoke_sessions(db: Session, user_id: uuid.UUID) -> None:
-    for s in db.scalars(select(AuthSession).where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))):
-        s.revoked_at = datetime.now(UTC)
-
-
 # ---- org level ----
 
 @router.get("/org/members")
 def list_members(p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
-    rows = db.execute(select(Membership, User, Workspace.name).join(User, User.id == Membership.user_id)
-                      .outerjoin(Workspace, Workspace.id == Membership.workspace_id)
-                      .where(Membership.org_id == _org(p)).order_by(User.email)).all()
-    return {"members": [_dto(m, u, wn) for m, u, wn in rows]}
+    return {"members": ops.list_members(db, _org(p))}
 
 
 @router.get("/org/workspaces")
@@ -84,44 +57,30 @@ def create_workspace(body: WorkspaceBody, p: Principal = Depends(require_permiss
     return {"id": str(ws.id), "name": ws.name}
 
 
-def _membership(db: Session, org_id: uuid.UUID, mid: uuid.UUID) -> Membership:
-    m = db.get(Membership, mid)
-    if m is None or m.org_id != org_id:
-        raise HTTPException(404, "not_found")
-    return m
-
-
 @router.patch("/org/memberships/{mid}", dependencies=[Depends(csrf_origin_check)])
 def change_role(mid: uuid.UUID, body: RoleBody, p: Principal = Depends(require_permission(ORG_MGR)),
                 db: Session = Depends(get_db)):
-    m = _membership(db, _org(p), mid)
-    if m.user_id == p.user.id:
-        raise HTTPException(409, "cannot_change_own_role")
-    if m.workspace_id and body.role not in WORKSPACE_ROLES:
-        raise HTTPException(422, "role_not_allowed_for_workspace")
-    new = _role(db, body.role)
-    if m.workspace_id is None and m.role.key == "org_admin" and body.role != "org_admin" and _org_admin_count(db, m.org_id) <= 1:
-        raise HTTPException(409, "last_org_admin")
-    m.role_id = new.id
-    db.commit()
-    db.refresh(m)
-    audit.record(db, "member.role_changed", actor_id=p.user.id, org_id=m.org_id, workspace_id=m.workspace_id,
-                 resource=f"user:{m.user_id}", detail=f"role={body.role}")
+    m = ops.change_role(db, _org(p), mid, body.role, p.user)
     return {"ok": True, "role": m.role.key}
 
 
 @router.delete("/org/memberships/{mid}", dependencies=[Depends(csrf_origin_check)])
 def remove_membership(mid: uuid.UUID, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
-    m = _membership(db, _org(p), mid)
-    if m.user_id == p.user.id:
-        raise HTTPException(409, "cannot_remove_self")
-    if m.workspace_id is None and m.role.key == "org_admin" and _org_admin_count(db, m.org_id) <= 1:
-        raise HTTPException(409, "last_org_admin")
-    org_id, ws_id, uid = m.org_id, m.workspace_id, m.user_id
-    db.delete(m)
-    db.commit()
-    audit.record(db, "member.removed", actor_id=p.user.id, org_id=org_id, workspace_id=ws_id, resource=f"user:{uid}")
+    ops.remove_membership(db, _org(p), mid, p.user)
     return {"ok": True}
+
+
+@router.post("/org/members/{user_id}/block", dependencies=[Depends(csrf_origin_check)])
+def block_member(user_id: uuid.UUID, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
+    """Blocks the person in this organization only. They keep their account and other organizations."""
+    ops.set_blocked(db, _org(p), user_id, True, p.user)
+    return {"ok": True, "blocked": True}
+
+
+@router.post("/org/members/{user_id}/unblock", dependencies=[Depends(csrf_origin_check)])
+def unblock_member(user_id: uuid.UUID, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
+    ops.set_blocked(db, _org(p), user_id, False, p.user)
+    return {"ok": True, "blocked": False}
 
 
 @router.delete("/org/members/{user_id}", dependencies=[Depends(csrf_origin_check)])
@@ -135,35 +94,22 @@ def disable_member(user_id: uuid.UUID, p: Principal = Depends(require_permission
     user = db.get(User, user_id) if in_org else None
     if user is None:
         raise HTTPException(404, "not_found")
-    if _in_other_orgs(db, user.id, org):
+    if ops.in_other_orgs(db, user.id, org):
         for m in db.scalars(select(Membership).where(Membership.user_id == user.id, Membership.org_id == org)):
             db.delete(m)
         db.commit()
         audit.record(db, "member.removed_from_org", actor_id=p.user.id, org_id=org, resource=f"user:{user.id}")
         return {"ok": True, "disabled": False}
     user.disabled = True
-    _revoke_sessions(db, user.id)
+    ops.revoke_sessions(db, user.id)
     db.commit()
     audit.record(db, "member.disabled", actor_id=p.user.id, org_id=org, resource=f"user:{user.id}")
     return {"ok": True, "disabled": True}
 
 
-def _in_other_orgs(db: Session, user_id: uuid.UUID, org: uuid.UUID) -> bool:
-    return db.scalar(select(Membership).where(Membership.user_id == user_id, Membership.org_id != org).limit(1)) is not None
-
-
 @router.post("/org/members/{user_id}/reset-link", status_code=201, dependencies=[Depends(csrf_origin_check)])
 def reset_link(user_id: uuid.UUID, p: Principal = Depends(require_permission(ORG_MGR)), db: Session = Depends(get_db)):
-    in_org = db.scalar(select(Membership).where(Membership.user_id == user_id, Membership.org_id == _org(p)))
-    if in_org is not None and _in_other_orgs(db, user_id, _org(p)):
-        # A password reset unlocks the whole account, including other organizations: not this admin's to grant.
-        raise HTTPException(409, "user_in_other_organizations")
-    user = db.get(User, user_id) if in_org else None
-    if user is None or user.is_platform_admin:
-        raise HTTPException(404, "not_found")
-    inv, token = create_invitation(db, kind="reset", org_id=_org(p), email=user.email, invited_by=p.user.id, user_id=user.id)
-    audit.record(db, "member.reset_link_issued", actor_id=p.user.id, org_id=_org(p), resource=f"user:{user.id}")
-    return {"token": token, "expiresAt": inv.expires_at.isoformat()}
+    return ops.issue_reset_link(db, _org(p), user_id, p.user, platform=False)
 
 
 # ---- workspace level ----
@@ -179,7 +125,7 @@ def _ws_membership(db: Session, acc: WorkspaceAccess, mid: uuid.UUID) -> Members
 def ws_members(acc: WorkspaceAccess = Depends(workspace_access(P["ws_members_manage"])), db: Session = Depends(get_db)):
     rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(
         Membership.workspace_id == acc.workspace.id).order_by(User.email)).all()
-    return {"members": [_dto(m, u, acc.workspace.name) for m, u in rows]}
+    return {"members": [ops.member_dto(m, u, acc.workspace.name) for m, u in rows]}
 
 
 @router.patch("/workspaces/{ws_id}/memberships/{mid}", dependencies=[Depends(csrf_origin_check)])
@@ -192,7 +138,7 @@ def ws_change_role(mid: uuid.UUID, body: RoleBody, acc: WorkspaceAccess = Depend
     if body.role not in (WORKSPACE_ROLES if org_wide else WS_ADMIN_GRANTABLE) or (
             not org_wide and m.role.key == "workspace_admin"):
         raise HTTPException(403, "role_not_grantable")  # cannot grant or demote at/above your own level
-    m.role_id = _role(db, body.role).id
+    m.role_id = ops.role_by_key(db, body.role).id
     db.commit()
     audit.record(db, "member.role_changed", actor_id=acc.principal.user.id, org_id=m.org_id, workspace_id=m.workspace_id,
                  resource=f"user:{m.user_id}", detail=f"role={body.role}")
